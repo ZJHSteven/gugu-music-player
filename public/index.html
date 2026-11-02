@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>咕咕点歌台</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="hdr">
+        <div class="mark"><img src="./icon.png" alt="" /></div>
+        <div class="name">咕咕点歌台</div>
+        <div class="right">
+          <span id="role" class="badge">…</span>
+          <span id="dot" class="dot"></span>
+        </div>
+      </header>
+      <main id="view" class="main"><div class="empty">正在连接…</div></main>
+    </div>
+
+    <!-- 抢在模块之前把父窗口的消息缓存下来：
+         OBR 在 iframe 加载时就发一次 OBR_READY，而 SDK 要等模块加载完才挂监听，
+         那条消息会丢，于是 isReady 永远 false、getRole() 一直抛 not ready。
+         这里先录下来，SDK 就绪后由 lib.js 回放。 -->
+    <script>
+      window.__bardMessages = [];
+      window.addEventListener("message", function (e) {
+        try {
+          window.__bardMessages.push({ data: e.data, origin: e.origin });
+        } catch (_) {}
+      });
+    </script>
+
+    <!-- 也可以用 ?api=https://your-server 临时覆盖 -->
+    <script src="./config.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

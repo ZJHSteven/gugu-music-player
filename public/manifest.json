@@ -1,0 +1,17 @@
+{
+  "name": "咕咕点歌台",
+  "version": "3.1.0",
+  "manifest_version": 1,
+  "author": "鸽翅",
+  "description": "音乐播放插件，既可以直接播放本地的音乐、环境音效；也支持粘贴 B 站视频链接，提取音频直接播放。让 GM 一键掌控房间配乐！",
+  "icon": "./icon.png",
+  "background_url": "./background.html",
+  "permissions": [{ "name": "autoplay", "reason": "同步播放 GM 选择的音乐" }],
+  "action": {
+    "title": "咕咕点歌台",
+    "icon": "./icon-action.svg",
+    "popover": "./",
+    "width": 420,
+    "height": 640
+  }
+}

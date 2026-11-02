@@ -1,0 +1,16 @@
+{
+  "name": "obr-bard",
+  "version": "3.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Owlbear Rodeo 房间音乐插件：GM 播放本地音乐 / B 站音频，全房间同步收听",
+  "engines": { "node": ">=18.17" },
+  "scripts": {
+    "start": "node server/index.js",
+    "vendor": "node tools/vendor-sdk.mjs",
+    "selftest": "node tools/selftest.mjs",
+    "uitest": "node tools/uitest.mjs",
+    "check-release": "node tools/check-release.mjs"
+  }
+}

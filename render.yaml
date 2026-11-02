@@ -1,0 +1,23 @@
+# 部署到 Render 的一键配置（可选）
+#
+# 免费实例的磁盘是临时的：重新部署/休眠后上传的音乐会丢（歌单结构还在，但文件没了）。
+# 想要持久，二选一：
+#   · 换成付费实例并挂载磁盘（下面 disk 段已备好，取消注释并选个付费计划）
+#   · 或者把音频放对象存储（R2/OSS），本服务只做控制与转发
+services:
+  - type: web
+    name: obr-bard
+    runtime: node
+    plan: free
+    buildCommand: "echo 无需构建"
+    startCommand: "node server/index.js --port $PORT --data /var/data"
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # 可选：房间控制权密钥
+      # - key: MUSIC_ADMIN_KEY
+      #   generateValue: true
+    # disk:
+    #   name: bard-data
+    #   mountPath: /var/data
+    #   sizeGB: 5

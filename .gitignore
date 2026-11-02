@@ -1,0 +1,29 @@
+# 运行时数据：房间存档、上传的音乐
+data/
+
+# 本地工具：隧道程序等（53MB，不要进仓库）
+.bin/
+
+# 依赖与日志
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+
+# 自带的运行时二进制：体积大（约 150MB），不进 git，
+# 通过 GitHub Releases 的 zip 分发；保留同目录的许可证说明。
+runtime/*.exe
+
+# 本地调试用
+.edge-demo/
+
+# 自己放的测试音乐（版权原因不进仓库）
+*.aac
+*.mp3
+*.m4a
+*.flac
+!public/**/*.js
+
+# 本机小工具（不属于项目）
+tools/ghd-zh.mjs
+还原GitHub Desktop英文.bat

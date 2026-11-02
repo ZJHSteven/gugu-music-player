@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>咕咕点歌台 · Engine</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: transparent;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- 同 index.html：先把父窗口的 OBR_READY 录下来，SDK 就绪后回放 -->
+    <script>
+      window.__bardMessages = [];
+      window.addEventListener("message", function (e) {
+        try {
+          window.__bardMessages.push({ data: e.data, origin: e.origin });
+        } catch (_) {}
+      });
+    </script>
+    <script src="./config.js"></script>
+    <script type="module" src="./background.js"></script>
+  </body>
+</html>

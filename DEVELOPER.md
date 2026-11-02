@@ -1,0 +1,252 @@
+# 咕咕点歌台 · 开发者文档
+
+面向要自己部署、二次开发或排查问题的人。普通用户请看 [README.md](README.md)。
+
+---
+
+## 架构
+
+```
+浏览器（OBR 里的扩展页面）
+  ├─ index.html / app.js    界面：GM 控制台 + 玩家播放页
+  ├─ background.html        隐藏页面，音频引擎常驻（面板关掉也不停）
+  ├─ engine.js              真正发声：与服务端时间轴对齐、自动播放限制处理
+  └─ lib.js                 通信、总线、SDK 加载、身份识别
+            │  HTTP / SSE / 长轮询
+            ▼
+Node 服务（零依赖）
+  ├─ index.js    路由、静态文件、SSE、长轮询、上传、B 站代理、启动恢复
+  ├─ rooms.js    房间状态机：歌单、播放状态、分类、控制权
+  ├─ bilibili.js WBI 签名 + 音轨直链解析与刷新
+  └─ log.js      控制台 + data/server.log 双写
+```
+
+---
+
+## 自带的 Node 运行时
+
+`runtime/node.exe` 是官方 Node LTS（Windows x64）的拷贝，许可证见 `runtime/LICENSE.node.txt`。
+
+`点这个启动程序.bat` 的查找顺序：
+
+1. `runtime\node.exe`（自带，绝大多数用户走这条）；
+2. 系统 PATH 里的 `node`（自己装过 Node 的开发者）；
+3. 都没有才报错提示。
+
+所以普通用户**不需要安装 Node.js**，也不需要管理员权限——全程不写注册表、不动系统目录。
+
+同一目录下还有 **`runtime/cloudflared.exe`**（约 53MB），是 Cloudflare 隧道程序，版本 2026.10.7。
+
+> 为什么要随包：`cloudflared` 只发布在 GitHub Releases，**国内网络访问 GitHub 会直接超时**（实测 15 秒无响应），自动下载在目标用户那里基本必然失败。所以改成随包分发，启动时按 `runtime/` → `.bin/` 的顺序查找，都没有才尝试下载。
+
+升级方式：从 https://nodejs.org 下载 win-x64 zip，把 `node.exe` 和 `LICENSE` 覆盖进 `runtime/`；cloudflared 从 https://github.com/cloudflare/cloudflared/releases 下载 `cloudflared-windows-amd64.exe` 覆盖。
+
+这个目录会让发布包增加约 148MB（压缩后约 90MB）。**如果是发布到 GitHub，建议把二进制放到 Releases 附件，不要进 git 仓库**——git 会永久保存每个版本的历史副本，仓库很快膨胀。
+
+macOS / Linux 没有对应的自带运行时，用户需自行安装 Node 18+，或用 `docker compose up -d`。
+
+---
+## 开发和测试
+
+```bash
+node server/index.js --port 8787   # 起服务（加 --verbose 看详细日志）
+npm run selftest                   # 服务端 39 项端到端测试
+npm run uitest                     # 浏览器 61 项验收（自建临时服务 + 无头 Edge）
+npm run vendor                     # 重新本地化 OBR SDK 依赖（换 SDK 版本后必跑）
+npm run check-release              # 发布前自检
+```
+
+脱离 OBR 调界面：
+
+```
+http://localhost:8787/?dev=1&role=GM&room=devroom
+http://localhost:8787/?dev=1&role=PLAYER&room=devroom
+```
+
+`?sync=poll` 或 `?sync=long` 可强制指定同步方式，方便调试。
+
+---
+
+## 配置
+
+| 参数 | 环境变量 | 命令行 | 默认 |
+| --- | --- | --- | --- |
+| 端口 | `PORT` | `--port` | `8787` |
+| 数据目录 | `DATA_DIR` | `--data` | `./data` |
+| 主持密钥 | `MUSIC_ADMIN_KEY` | `--admin-key` | 空 |
+| 单文件上限 | `MAX_UPLOAD_MB` | — | `80` |
+| 预置曲目 | `PRELOAD_FILE` | `--preload` | 空 |
+| 详细输出 | `VERBOSE=1` | `--verbose` | 关 |
+
+```bash
+node server/index.js --port 9000 --preload "D:\歌.mp3"
+```
+
+`--preload` 会在房间**第一次被接管**时把歌放进歌单并开始播放，适合开团前铺好 BGM。
+
+---
+
+## 部署方式
+
+### Docker
+
+```bash
+docker compose up -d           # 数据持久化在 ./data
+docker compose logs -f         # 看启动信息
+```
+
+### 反向代理
+
+Nginx / Caddy 注意两点：
+
+- `client_max_body_size 200m;`（上传）；
+- `proxy_buffering off;`（否则 SSE 会被缓冲，控制延迟变高）。
+
+### GitHub Pages（只托管扩展）
+
+扩展本体是纯静态文件，可以放 Pages，安装地址不再随隧道变化：
+
+1. 推到 GitHub；
+2. **Settings → Pages → Source** 选 **GitHub Actions**（`.github/workflows/pages.yml` 会自动发布 `public/`）；
+3. 编辑 `public/config.js` 填后端地址：
+
+   ```js
+   window.BARD_API = "https://你的后端地址";
+   ```
+
+`apiBase()` 优先级：`config.js 的 BARD_API` > `?api=` 参数 > 本地记住的 > 同源。留空就是同源。
+
+> ⚠️ 别把自己的后端地址填进公开仓库——那样所有装插件的人都会连到你的机器。给公众用的版本请留空。
+
+---
+
+## 同步机制（排障看这段）
+
+| 机制 | 什么时候用 | 延迟 |
+| --- | --- | --- |
+| SSE 推送 | 本机直连、能流式转发的反代 | 几十毫秒 |
+| 长轮询 `/wait` | SSE 被代理缓冲（Cloudflare 快速隧道就是这样） | 一次往返，约 0.3–0.9 秒 |
+| 定时轮询 `/now` | 长轮询连续失败 3 次 | 0.4 秒 + 往返 |
+
+引擎建连 2.5 秒内收不到 SSE 数据就自动降级到长轮询，**不需要配置**。日志里看到 `sync-longpoll` 属正常。
+
+### 时间轴
+
+服务端维护 `{position, anchor, playing, seq}`，客户端自己算：
+
+```
+该播到哪 = position + (现在 - anchor) / 1000
+```
+
+所以推送晚到不会造成位置偏差，只影响操作反应速度。
+
+### 客户端容错
+
+- 网络卡顿时**不做纠偏**（避免 seek → 重新缓冲 → 更卡的死循环）；
+- 偏差 0.2~3 秒用 ±6% 播放速度慢慢追，听不出来；
+- 只有超过 3 秒（比如有人拖了进度条）才硬跳；
+- 换曲后 5 秒内不纠偏，让缓冲先稳住；
+- 换曲时在 `loadedmetadata` 重新计算目标位置，避免"开头就落后几秒"。
+
+---
+
+## 权限模型
+
+- **歌单只有 GM 能读**：`/now` 只返回当前曲目；完整歌单接口要令牌；SSE 也按身份分流（`state` 事件只发给带令牌的连接）。
+- **控制只有 GM 能做**：上传、删除、播放/暂停、切歌、分类全部要 `Authorization: Bearer <令牌>`，无令牌一律 403。
+- **控制权靠心跳**：每 20 秒续期，90 秒无心跳释放，别的 GM 才能接管。
+- **改设置不会打乱播放进度**：`settings` / `playlist move` / `track.update` 会先冻结当前位置再更新锚点。
+
+**限制**：OBR 不提供服务器侧的 GM 校验，`role === "GM"` 是浏览器告诉我们的，所以第一次取得控制权是先到先得。要硬保证就加主持密钥：
+
+```bash
+MUSIC_ADMIN_KEY=你的随机串 node server/index.js
+```
+
+玩家用开发者工具能看到**当前这一首**的音频地址（要出声就必然如此），但看不到整份歌单。
+
+---
+
+## 诊断日志
+
+所有请求、前端上报、启动信息都写进 `data/server.log`（超过 5MB 自动滚成 `server.old.log`）。终端只显示安装地址。
+
+```bash
+tail -f data/server.log
+```
+
+关键上报类型：
+
+| kind | 含义 |
+| --- | --- |
+| `audio-stall` | 播放卡顿，带 `buffered`（当前缓冲秒数） |
+| `audio-blocked` / `audio-error` | 自动播放被拦 / 音频加载失败 |
+| `sync-longpoll` | 已降级到长轮询 |
+| `identity` | OBR 身份识别结果（`ready`、`role`） |
+| `folder-move` | 分类操作 |
+
+启动时服务端会自动：
+
+- 恢复「正在播放」房间的自动切歌定时器；
+- 清掉歌单里已不存在、且 10 分钟没被动过的音频文件。
+
+`scheduleAutoAdvance` 有个特殊处理：进度条拖到时长末尾时（剩余 ≤ 0.2 秒）会补一个 300ms 定时器走结尾流程，否则单曲循环/列表切歌都不会触发。
+
+---
+
+## 发布前自检
+
+```bash
+npm run check-release
+```
+
+检查：
+
+- 内网 IP、本机绝对路径、令牌明文、你自己的隧道地址；
+- `public/config.js` 是否写死后端地址；
+- `manifest.json` 是否用了相对路径（绝对路径在 Pages 子路径下会 404）；
+- 目录里有没有 `data/`、`.bin/`、音乐文件。
+
+**上传 GitHub 请用发布包，不要直接拖整个工作目录**——网页拖拽上传不看 `.gitignore`，会把含控制令牌的 `data/` 一起传上去。
+
+---
+
+## 已知的坑
+
+`public/sdk/obr.js` 是 jsDelivr 的 `+esm` 构建，内部 `import` 了 `/npm/uuid@…` 这类**绝对路径**。放进 OBR 会解析成 `http://localhost:8787/npm/...` → 404，整个模块图挂掉，浏览器只报一句含糊的 `Failed to fetch dynamically loaded module`。
+
+`tools/vendor-sdk.mjs` 会把这三个依赖下载到 `public/sdk/vendor/` 并改成相对路径。**升级 SDK 后必须重跑**，`npm run selftest` 里有对应的回归检查。
+
+其它踩过的坑：
+
+- **`prompt()` / `confirm()` 在 OBR 的 iframe 里被静默屏蔽**，所以确认框和输入框都是自己画的；
+- **`.bat` 里不能有中文**：cmd 按系统代码页解析，UTF-8 中文会变成非法命令，全部文案交给 Node 输出；
+- **面板里的滑块拖动期间不能重建 DOM**，否则拖拽状态丢失（`S.sliderActive` 控制）；
+- **`manifest.json` 只在安装时读取**，改图标必须移除扩展再重装；
+- **边栏图标会被 OBR 单色遮罩**，所以 `icon-action.svg` 是纯白实心几何图形，不是插画。
+
+---
+
+## 目录
+
+```
+server/     index.js(路由/SSE/长轮询/静态) rooms.js(房间/播放状态/分类)
+            bilibili.js(B 站解析) log.js(日志)
+public/     manifest.json index.html background.html style.css config.js
+            app.js(界面) engine.js(音频引擎) lib.js(通信/总线/SDK) dev-sdk.js(调试)
+            icon.png(彩色图标) icon-action.svg(边栏单色图标)
+            sdk/obr.js + sdk/vendor/(本地化的 SDK 依赖)
+scripts/    setup.mjs(一键启动：查环境→起服务→拉隧道→打印地址)
+tools/      selftest.mjs uitest.mjs vendor-sdk.mjs sse-check.mjs check-release.mjs shots/
+.github/    workflows/pages.yml(把 public/ 发布到 Pages)
+Dockerfile · docker-compose.yml · render.yaml · start.sh · 点这个启动程序.bat
+data/       运行时生成：房间存档、音频、server.log（不要提交）
+```
+
+---
+
+## 许可证
+
+仓库里还没有 `LICENSE` 文件，意味着默认保留所有权利。想让它能自由使用 / 修改，常见选择是 MIT 或 Apache-2.0。
+
+`public/sdk/obr.js` 是 Owlbear Rodeo 官方 SDK，遵循它自己的许可。

@@ -1,0 +1,24 @@
+# 一条命令跑起来：docker compose up -d
+# 数据（歌单与上传的音乐）挂在 ./data，重建容器不会丢。
+#
+# 需要公网访问时：在前面放一层反向代理（Caddy/Nginx）并开启 HTTPS，
+# 注意关闭响应缓冲，否则 SSE 会被吞掉（服务端已内置长轮询兜底，但 SSE 更快）。
+services:
+  bard:
+    build: .
+    container_name: obr-bard
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./data:/app/data
+      # 想预置一首开场曲，把文件放进 ./tracks 并取消下面这行注释：
+      # - ./tracks:/app/preload:ro
+    environment:
+      - PORT=8787
+      # 可选：给房间控制权加一道密钥
+      # - MUSIC_ADMIN_KEY=换成你自己的随机串
+      # 可选：单文件上传上限（MB）
+      # - MAX_UPLOAD_MB=120
+      # 可选：开场自动预置一首歌（容器内路径）
+      # - PRELOAD_FILE=/app/preload/intro.mp3
