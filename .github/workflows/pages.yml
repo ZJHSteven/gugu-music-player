@@ -1,11 +1,19 @@
-# 把 public/ 发布到 GitHub Pages。
-# 启用方式：仓库 Settings → Pages → Source 选 "GitHub Actions"。
-# 发布后扩展地址是  https://<用户名>.github.io/<仓库名>/manifest.json
-name: Deploy extension to Pages
+# 【可选】把 public/ 发布到 GitHub Pages。
+#
+# 说明：
+#   这个项目的扩展页面由你自己的后端服务器直接提供
+#   （启动终端后打印的 https://xxx/manifest.json），
+#   所以正常情况下**不需要** GitHub Pages。
+#
+#   只有当你确实想给扩展一个永久静态地址时才用：
+#     1. 仓库 Settings → Pages → Source 选 "GitHub Actions"
+#     2. 到 Actions 页面手动运行本工作流（Run workflow）
+#     3. 在 public/config.js 里填上你的后端地址（window.BARD_API）
+#
+# 默认不随推送自动运行，避免每次提交都因为"Pages 未启用"而报失败。
+name: Deploy extension to Pages (manual)
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
