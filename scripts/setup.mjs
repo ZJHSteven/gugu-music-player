@@ -79,7 +79,27 @@ for (const needed of ["server/index.js", "public/manifest.json"]) {
 }
 
 // ---------- 2. 起服务 ----------
+// 清理逻辑必须先声明：子进程可能在下面任何 await 之前就退出（例如端口被占用），
+// 那时如果 shutdown 还没定义、closing 还在 TDZ，就会抛 ReferenceError 盖住真正的错误。
 const children = [];
+let closing = false;
+function shutdown(code = 0) {
+  if (closing) return;
+  closing = true;
+  for (const ch of children) {
+    try {
+      ch.kill();
+    } catch {}
+  }
+  setTimeout(() => process.exit(code), 300);
+}
+process.on("SIGINT", () => shutdown(0));
+process.on("SIGTERM", () => shutdown(0));
+process.on("uncaughtException", (err) => {
+  say(c.red + `\n  出错了：${err && err.message ? err.message : err}\n` + c.reset);
+  shutdown(1);
+});
+
 const server = spawn(process.execPath, [path.join(ROOT, "server/index.js"), "--port", String(PORT)], {
   cwd: ROOT,
   stdio: ["ignore", "inherit", "inherit"],
@@ -88,19 +108,39 @@ children.push(server);
 let serverUp = false;
 server.on("exit", (code) => {
   if (!serverUp) {
-    say(c.red + `\n  服务启动失败（退出码 ${code}）。端口 ${PORT} 可能被占用，试试 --port 9000\n` + c.reset);
+    // 退出码 2 = 服务端已经解释过端口冲突，这里只补一句怎么办，避免同样的字重复两遍
+    if (code === 2) {
+      say(c.dim + `  也可以先关掉占用 ${PORT} 的那个窗口（比如之前开着的本插件终端）。\n` + c.reset);
+    } else {
+      say(c.red + `\n  服务启动失败（退出码 ${code}）。\n` + c.reset);
+      say(c.dim + `  换个端口再试：点这个启动程序.bat --port 9000\n` + c.reset);
+    }
+    shutdown(1);
+    return;
   }
+  say(c.dim + "\n  服务已退出，正在关闭…\n" + c.reset);
   shutdown(0);
 });
 
+// 判断"是不是我这次起的服务在响应"。
+// 端口冲突时子进程会在 100ms 内退出，而旧实例可能仍然在同一个端口上正常响应，
+// 所以先等一个稳定期，再要求连续两次健康检查都通过、且子进程还活着。
 async function waitHealth(timeoutMs = 15000) {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  await sleep(700);
+  if (server.exitCode !== null) return false;
   const started = Date.now();
+  let streak = 0;
   while (Date.now() - started < timeoutMs) {
+    if (server.exitCode !== null) return false;
     try {
       const r = await fetch(`http://localhost:${PORT}/api/health`);
-      if (r.ok) return true;
-    } catch {}
-    await new Promise((r) => setTimeout(r, 300));
+      streak = r.ok ? streak + 1 : 0;
+      if (streak >= 2) return true;
+    } catch {
+      streak = 0;
+    }
+    await sleep(350);
   }
   return false;
 }
@@ -212,17 +252,4 @@ say(`  ${c.bold}安装方法${c.reset}：左下角三个点 → Extension → �
 say("");
 say(`  ${c.dim}提示：这个窗口要一直开着；关掉或重启后地址会变，你需要重新复制地址安装。${c.reset}`);
 say("");
-// ---------- 5. 退出清理 ----------
-let closing = false;
-function shutdown(code) {
-  if (closing) return;
-  closing = true;
-  for (const ch of children) {
-    try {
-      ch.kill();
-    } catch {}
-  }
-  setTimeout(() => process.exit(code), 300);
-}
-process.on("SIGINT", () => shutdown(0));
-process.on("SIGTERM", () => shutdown(0));
+

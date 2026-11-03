@@ -390,6 +390,33 @@ await sleep(3000);
 const advanced = await json(await fetch(`${BASE}/api/rooms/${R2}/now`));
 check("2 秒曲目播完自动切下一首", () => assert.equal(advanced.body.playback.trackId, t2.id));
 
+// ---------- 启动脚本的故障路径（曾把真错误盖成 ReferenceError） ----------
+{
+  const { spawnSync } = await import("node:child_process");
+  const root = path.resolve(import.meta.dirname, "..");
+  // 用一个必然被占用的端口：先自己监听，再跑启动脚本
+  const net = await import("node:net");
+  const blocker = net.createServer(() => {});
+  await new Promise((r) => blocker.listen(0, "0.0.0.0", r));
+  const busy = blocker.address().port;
+  const r = spawnSync(process.execPath, [path.join(root, "scripts/setup.mjs"), "--port", String(busy), "--no-tunnel"], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 40000,
+    env: { ...process.env, NO_COLOR: "1" },
+  });
+  const out = (r.stdout || "") + (r.stderr || "");
+  check("端口被占用时给出可读提示，而不是抛 ReferenceError", () => {
+    assert.ok(/已被占用/.test(out), `输出应包含“已被占用”，实际：${out.slice(0, 300)}`);
+    assert.ok(!/ReferenceError/.test(out), "不应出现 ReferenceError");
+  });
+  check("端口被占用时不显示安装地址（不会把旧实例当成自己）", () => {
+    assert.ok(!/扩展安装地址/.test(out), "不应显示安装地址");
+  });
+  check("端口被占用时以非零码退出", () => assert.notEqual(r.status, 0));
+  await new Promise((r2) => blocker.close(r2));
+}
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
 fs.rmSync(DATA, { recursive: true, force: true });
 process.exit(fail ? 1 : 0);

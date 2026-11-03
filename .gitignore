@@ -27,3 +27,8 @@ runtime/*.exe
 # 本机小工具（不属于项目）
 tools/ghd-zh.mjs
 还原GitHub Desktop英文.bat
+
+# 视频制作素材与成片（体积大，不进仓库）
+.eac-music/
+/*.mp4
+tools/_*.mjs

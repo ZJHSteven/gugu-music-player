@@ -751,6 +751,18 @@ function restoreRooms() {
   return { rooms: files.length, resumed, removed };
 }
 
+server.on("error", (err) => {
+  // 端口被占用时不要让 Node 抛未处理的 error 事件（会打出一大段堆栈），
+  // 给一句能看懂的提示后干净退出，由启动脚本负责收尾。
+  if (err && err.code === "EADDRINUSE") {
+    logError(`端口 ${PORT} 已被占用：可能是上一次的窗口还开着，或别的程序占用了它。`);
+    log("  换个端口再试：在命令行里运行  点这个启动程序.bat --port 9000");
+    process.exit(2);
+  }
+  logError(`服务启动失败：${err && err.message ? err.message : err}`);
+  process.exit(1);
+});
+
 server.listen(PORT, HOST, () => {
   // 启动横幅默认不打印：真正要看的只有「安装地址」，由 setup 脚本负责显示。
   // 需要排查时用 --verbose 或 VERBOSE=1 打开这些细节。
