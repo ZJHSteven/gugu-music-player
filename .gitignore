@@ -38,3 +38,4 @@ pv.html
 发布文案.txt
 tools/_*.mjs
 tools/_*.py
+.update/

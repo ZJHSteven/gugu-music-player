@@ -29,6 +29,8 @@ const fmt = (sec) => {
 const icon = (n) => `<span aria-hidden="true">${ICON[n] || ""}</span>`;
 
 const S = {
+  upd: { current: "", latest: "", hasUpdate: false, autoUpdate: true, ready: false, readyVersion: "" },
+  updBusy: false,
   role: "PLAYER",
   roomId: "",
   now: null,
@@ -182,7 +184,13 @@ function gmView() {
   const blocked = S.status.blocked
     ? `<button class="unlock" data-act="unlock">${icon("volume")}浏览器拦截了声音，点这里开启</button>`
     : "";
-  return noticeHtml() + nowCard(true) + transport + blocked + tabs + body;
+  // 更新提示：先告诉用户检测到了，下载完再告诉他怎么生效
+  const updTip = S.upd?.ready
+    ? `<div class="upd-banner ready"><span>新版本 ${esc(S.upd.readyVersion)} 已下载</span><span class="upd-hint">关闭这个窗口，再双击「点这个启动程序」</span></div>`
+    : S.upd?.hasUpdate
+      ? `<div class="upd-banner"><span>发现新版本 ${esc(S.upd.latest)}</span><span class="upd-hint">${S.upd.autoUpdate ? "正在后台下载…" : "可在设置里手动更新"}</span></div>`
+      : "";
+  return noticeHtml() + updTip + nowCard(true) + transport + blocked + tabs + body;
 }
 
 /** 插件自带的确认框：OBR 的 iframe 里 window.confirm/prompt 会被静默屏蔽。 */
@@ -279,9 +287,9 @@ function addView() {
   return `
   <div class="field">
     <div class="label">本地音乐 <span class="hint">mp3 / m4a / ogg / wav</span></div>
-    <div class="drop" data-act="pick-file">${icon("upload")}<div>点击选择，或把音频拖进来</div>
-      <small>上传后全房间都能听到</small></div>
-    <input class="hidden" id="file" type="file" accept="audio/*,.mp3,.m4a,.ogg,.wav,.flac" multiple />
+    <label class="drop" for="file">${icon("upload")}<div>点击选择，或把音频拖进来</div>
+      <small>上传后全房间都能听到</small></label>
+    <input id="file" type="file" accept="audio/*,.mp3,.m4a,.ogg,.wav,.flac" multiple style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none" />
     ${up ? `<div class="notice">${up.done ? "" : '<span class="spin"></span>'}<span>${
       up.done ? `已完成 ${up.done} 个` : `${esc(up.name)} · ${Math.round(up.pct * 100)}%`
     }</span></div>` : ""}
@@ -414,6 +422,11 @@ async function command(body) {
     if (res?.state) {
       S.state = res.state;
       render(true);
+      // 面板立刻更新了，但真正出声的是后台引擎。
+      // 把响应里的 now 直接推给它，省掉引擎再问一次服务器的往返；
+      // 少了这一趟，切歌才没有迟滞感。
+      if (res.now) bus?.post({ t: "now", now: res.now });
+      else bus?.post({ t: "refresh" });
     }
   } catch (err) {
     toast(err.message, "err");
@@ -523,7 +536,8 @@ async function doUpload(files) {
     try {
       S.uploading = { name: file.name, pct: 0 };
       render(true);
-      const duration = await mediaDuration(file);
+      // 时长只用于显示；读不到（0）也要能上传，不能因为元数据卡住整批
+      const duration = await mediaDuration(file).catch(() => 0);
       await uploadTrack({
         roomId: S.roomId,
         folder: activeFolder(),
@@ -760,24 +774,48 @@ document.addEventListener("change", (ev) => {
   }
 });
 
+// 拖拽：在面板任何位置松手都算，不再要求精确落在那个虚线框里
+const isAudioFile = (f) => /^audio\//.test(f.type || "") || /\.(mp3|m4a|aac|ogg|opus|wav|flac|webm)$/i.test(f.name || "");
 document.addEventListener("dragover", (ev) => {
-  const drop = ev.target.closest(".drop");
-  if (!drop) return;
+  if (![...(ev.dataTransfer?.types || [])].includes("Files")) return;
   ev.preventDefault();
-  drop.classList.add("over");
+  ev.dataTransfer.dropEffect = "copy";
+  ev.target.closest(".drop")?.classList.add("over");
 });
 document.addEventListener("dragleave", (ev) => ev.target.closest(".drop")?.classList.remove("over"));
 document.addEventListener("drop", (ev) => {
-  const drop = ev.target.closest(".drop");
-  if (!drop) return;
   ev.preventDefault();
-  drop.classList.remove("over");
-  if (ev.dataTransfer?.files?.length) doUpload(ev.dataTransfer.files);
+  document.querySelectorAll(".drop.over").forEach((el) => el.classList.remove("over"));
+  const files = [...(ev.dataTransfer?.files || [])];
+  if (!files.length) {
+    // 从微信 / QQ / 部分网盘拖出来时，浏览器拿不到真实的文件流，
+    // 以前是静默无反应，现在明确告诉用户改用按钮选择。
+    toast("没有读取到文件，请用「添加」里的选择文件", "warn");
+    return;
+  }
+  const audio = files.filter(isAudioFile);
+  if (!audio.length) return toast("只能拖入音频文件（mp3 / m4a / ogg / wav / flac）", "warn");
+  doUpload(audio);
 });
+
+async function loadUpdateState() {
+  try {
+    const r = await apiGet("/api/update");
+    S.upd = {
+      current: r.current || "",
+      latest: r.latest || "",
+      hasUpdate: Boolean(r.hasUpdate),
+      autoUpdate: r.autoUpdate !== false,
+      ready: Boolean(r.ready),
+      readyVersion: r.readyVersion || "",
+    };
+  } catch {}
+}
 
 // ---------- 启动 ----------
 async function boot() {
   window.__bardBooted = true;
+  loadUpdateState().then(() => render(true)).catch(() => {});
   const { OBR, role, roomId, attempts, ready } = await initOBR();
   S.role = role;
   S.roomId = roomId;

@@ -12,6 +12,7 @@ import { Readable } from "node:stream";
 import { Store, uid, cleanRoomId, cleanFolder, buildNow, buildState } from "./rooms.js";
 import { initLog, log, logError, logQuiet } from "./log.js";
 import { resolveBilibili, refreshBilibili, BILI_HEADERS } from "./bilibili.js";
+import { checkForUpdate, downloadUpdate, getUpdateState, currentVersion } from "./update.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC_DIR = path.join(ROOT, "public");
@@ -395,7 +396,7 @@ const route = (method, pattern, handler) => {
 };
 
 route("GET", "/api/health", (req, res) =>
-  json(req, res, 200, { ok: true, version: "3.0.0", time: Date.now(), needsKey: Boolean(ADMIN_KEY) })
+  json(req, res, 200, { ok: true, version: currentVersion(), time: Date.now(), needsKey: Boolean(ADMIN_KEY) })
 );
 
 route("POST", "/api/report", async (req, res) => {
@@ -526,7 +527,8 @@ route("POST", "/api/rooms/:room/command", async (req, res, p, search) => {
   log(`  [指令] ${JSON.stringify(body).slice(0, 90)} -> ${result.ok ? "ok" : result.error}`);
   if (!result.ok) return json(req, res, 400, result);
   publish(p.room);
-  json(req, res, 200, { ok: true, state: buildState(store.get(p.room)) });
+  // now 一并返回：面板可以直接推给后台引擎，省掉引擎再问一次服务器的往返
+  json(req, res, 200, { ok: true, state: buildState(store.get(p.room)), now: buildNow(store.get(p.room)) });
 });
 
 // 上传本地音乐（原始字节流，避免 multipart）
@@ -579,6 +581,30 @@ route("POST", "/api/rooms/:room/tracks", (req, res, p, search) => {
   });
 });
 
+route("GET", "/api/update", async (req, res) => {
+  json(req, res, 200, getUpdateState());
+});
+
+route("POST", "/api/update/check", async (req, res) => {
+  const r = await checkForUpdate();
+  json(req, res, 200, r);
+});
+
+route("POST", "/api/update/download", async (req, res) => {
+  try {
+    const r = await downloadUpdate((m) => log("  [更新] " + m));
+    json(req, res, 200, r);
+  } catch (err) {
+    json(req, res, 200, { ok: false, error: String(err.message || err) });
+  }
+});
+
+route("POST", "/api/update/auto", async (req, res) => {
+  const { enabled } = await readJson(req);
+  const { setAutoUpdate } = await import("./update.js");
+  json(req, res, 200, { ok: true, autoUpdate: setAutoUpdate(Boolean(enabled)) });
+});
+
 route("POST", "/api/rooms/:room/tracks/bilibili", async (req, res, p, search) => {
   if (!guard(req, res, p.room, bearer(req, search))) return;
   const { url, folder } = await readJson(req);
@@ -628,6 +654,7 @@ async function proxyRemote(req, res, roomId, track, retried = false) {
   if (req.headers.range) headers.Range = req.headers.range;
 
   let upstream;
+  const tUp = Date.now();
   try {
     upstream = await fetch(track.srcUrl, { headers, redirect: "follow" });
   } catch (err) {
@@ -643,6 +670,8 @@ async function proxyRemote(req, res, roomId, track, retried = false) {
   }
   if (upstream.status >= 400) return json(req, res, upstream.status, { error: `音频源返回 ${upstream.status}` });
 
+  const upMs = Date.now() - tUp;
+  if (upMs > 700) log(`  [音频] ${track.kind} 上游响应 ${upMs}ms（${track.title || ""}）`);
   pipeUpstream(req, res, upstream, track.mime && track.mime !== "video/mp4" ? track.mime : "audio/mp4");
 }
 

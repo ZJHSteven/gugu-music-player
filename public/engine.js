@@ -452,6 +452,9 @@ export class Engine {
     if (!track?.src) return this.halt();
 
     if (this.src !== track.src) {
+      // 切歌不淡出：旧曲立刻被替换，多一段淡出只会让人觉得「点了没反应」。
+      // 新曲用短淡入收一下开头，避免爆音。
+      this.shortFade = true;
       this.src = track.src;
       this.pendingSeek = this.target();
       // 服务端给的是相对路径，用自己访问到的地址解析（避免拿到 localhost）
@@ -511,7 +514,9 @@ export class Engine {
       .then(() => {
         this.blocked = false;
         if (wasBlocked) this.emitStatus();
-        this.fadeIn();
+        // 切歌后短淡入（180ms），普通开播用 400ms；太长会让开头听起来"闷一下"
+        this.fadeIn(this.shortFade ? 180 : 400);
+        this.shortFade = false;
       })
       .catch((err) => {
         report("audio-blocked", { kind: this.kind, name: err?.name, message: String(err?.message || err).slice(0, 160) });
@@ -525,7 +530,7 @@ export class Engine {
 
   pause() {
     this.resetRate();
-    if (!this.audio.paused) this.audio.pause();
+    if (!this.audio.paused) this.fadeOut(220, () => this.audio.pause());
   }
 
   halt() {
@@ -545,14 +550,47 @@ export class Engine {
     this.command({ type: "ended" });
   }
 
-  fadeIn() {
+  /** 淡入：从 0 升到 1（默认 400ms） */
+  fadeIn(ms = 400) {
+    this.stopFade();
     this.fade = 0;
     this.applyVolume();
-    const timer = setInterval(() => {
-      this.fade = Math.min(1, this.fade + 0.12);
+    const steps = Math.max(1, Math.round(ms / 40));
+    let i = 0;
+    this.fadeTimer = setInterval(() => {
+      i++;
+      this.fade = Math.min(1, i / steps);
       this.applyVolume();
-      if (this.fade >= 1) clearInterval(timer);
+      if (i >= steps) this.stopFade();
     }, 40);
+  }
+
+  /** 淡出到 0 后执行回调（默认 250ms），用于暂停与切歌 */
+  fadeOut(ms = 250, done) {
+    this.stopFade();
+    if (this.audio.paused) {
+      this.fade = 1;
+      return done && done();
+    }
+    const steps = Math.max(1, Math.round(ms / 40));
+    let i = 0;
+    this.fadeTimer = setInterval(() => {
+      i++;
+      this.fade = Math.max(0, 1 - i / steps);
+      this.applyVolume();
+      if (i >= steps) {
+        this.stopFade();
+        this.fade = 1;
+        if (done) done();
+      }
+    }, 40);
+  }
+
+  stopFade() {
+    if (this.fadeTimer) {
+      clearInterval(this.fadeTimer);
+      this.fadeTimer = null;
+    }
   }
 
   applyVolume() {
@@ -663,6 +701,14 @@ export class Engine {
         break;
       case "retry":
         this.connect();
+        break;
+      case "now":
+        // 面板把命令响应里的最新状态直接塞过来，省掉一次往返
+        if (msg.now) {
+          const prevSeq = this.now?.playback?.seq;
+          this.onNow(msg.now);
+          if (msg.now?.playback?.seq !== prevSeq) this.snap();
+        }
         break;
       case "refresh":
         // 拖完进度条让引擎立刻拉一次，不等下一个轮询周期

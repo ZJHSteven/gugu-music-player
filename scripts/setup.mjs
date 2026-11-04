@@ -76,6 +76,14 @@ function displayWidth(s) {
   return w;
 }
 
+// ---------- 0. 应用上次下载的更新 ----------
+// 必须在起服务之前替换 public/server/scripts，新代码才会被加载。
+try {
+  const { applyPendingUpdate } = await import("../server/update.js");
+  const applied = applyPendingUpdate();
+  if (applied.applied) say(c.green + `  已更新到 v${applied.version}` + c.reset);
+} catch {}
+
 // ---------- 1. 环境检查 ----------
 const major = Number(process.versions.node.split(".")[0]);
 if (major < 18) {
@@ -343,4 +351,39 @@ say(`  ${c.dim}（地址已复制，直接粘贴即可；没复制成功就三�
 say("");
 say(`  ${c.dim}提示：这个窗口要一直开着；关掉或重启后地址会变，需要重新安装一次。${c.reset}`);
 say("");
+
+// ---------- 5. 后台检查更新（不阻塞启动） ----------
+try {
+  const { checkForUpdate, downloadUpdate, getUpdateState, currentVersion } = await import("../server/update.js");
+  const cur = currentVersion();
+  say(`  ${c.dim}当前版本 v${cur}${c.reset}`);
+  const st = getUpdateState();
+  if (st.autoUpdate) {
+    checkForUpdate()
+      .then(async (r) => {
+        if (!r.ok) {
+          say(`  ${c.dim}检查更新失败（${r.error || "网络不通"}），不影响使用${c.reset}`);
+          return;
+        }
+        if (!r.hasUpdate) {
+          say(`  ${c.dim}已是最新版本${c.reset}`);
+          return;
+        }
+        say(`  ${c.green}发现新版本 ${r.latest}${c.reset}，正在后台下载…`);
+        const d = await downloadUpdate((m) => say(`  ${c.dim}${m}${c.reset}`));
+        if (d.ok) {
+          say("");
+          say(`  ${c.green}${c.bold}新版本 ${r.latest} 已下载完成${c.reset}`);
+          say(`  ${c.bold}请关闭这个窗口，再双击「点这个启动程序」${c.reset}`);
+          say(`  ${c.dim}重新启动后就是新版本，歌单和设置都会保留。${c.reset}`);
+          say("");
+        } else {
+          say(`  ${c.yellow}自动下载失败${c.reset}：${d.error}`);
+        }
+      })
+      .catch(() => {});
+  } else {
+    say(`  ${c.dim}自动更新已关闭${c.reset}`);
+  }
+} catch {}
 
