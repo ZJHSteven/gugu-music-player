@@ -4,7 +4,7 @@
 //   node scripts/setup.mjs              正常启动（有 cloudflared 就开隧道）
 //   node scripts/setup.mjs --no-tunnel  只在本机/局域网跑
 //   node scripts/setup.mjs --port 9000
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -17,7 +17,8 @@ const arg = (name, fallback) => {
   const i = argv.indexOf(`--${name}`);
   return i !== -1 && argv[i + 1] ? argv[i + 1] : fallback;
 };
-const PORT = Number(arg("port", process.env.PORT || 8787));
+const PREFERRED_PORT = Number(arg("port", process.env.PORT || 8787));
+let PORT = PREFERRED_PORT;
 const WANT_TUNNEL = !argv.includes("--no-tunnel");
 
 const c = {
@@ -42,6 +43,19 @@ function box(lines) {
   say(c.green + "  └" + "─".repeat(width) + "┘" + c.reset);
   say("");
 }
+// 把地址直接放进剪贴板：省掉「选中 → 复制」这一步，也就不带空格了
+function copyToClipboard(text) {
+  try {
+    const p = os.platform();
+    const cmd = p === "win32" ? "clip" : p === "darwin" ? "pbcopy" : "xclip";
+    const args = p === "linux" ? ["-selection", "clipboard"] : [];
+    const cp = spawnSync(cmd, args, { input: text, timeout: 3000 });
+    return cp.status === 0;
+  } catch {
+    return false;
+  }
+}
+
 const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
 // 终端里汉字/全角符号占两格，按显示宽度算才不会把边框撑歪
 function displayWidth(s) {
@@ -99,6 +113,79 @@ process.on("uncaughtException", (err) => {
   say(c.red + `\n  出错了：${err && err.message ? err.message : err}\n` + c.reset);
   shutdown(1);
 });
+
+// 端口三态探测：
+//   ours —— 同一端口上已经有「我们这个插件」在跑（最常见：上次的窗口没关）
+//   busy —— 被别的程序占用
+//   free —— 可用
+async function probePort(port, timeoutMs = 1200) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/manifest.json`, { signal: ctl.signal });
+    if (!res.ok) return "busy";
+    const m = await res.json().catch(() => null);
+    return m && typeof m.name === "string" && m.name.includes("咕咕点歌台") ? "ours" : "busy";
+  } catch {
+    return "free";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function pickPort(start) {
+  for (let p = start; p < start + 20; p += 1) {
+    const state = await probePort(p);
+    if (state === "free") return { port: p, state };
+    if (state === "ours") return { port: p, state };
+  }
+  return { port: start, state: "busy" };
+}
+
+// 上次成功启动时记录的地址（用来告诉用户"已经在跑的是哪个地址"）
+function lastKnownUrl() {
+  try {
+    const v = fs.readFileSync(path.join(BIN_DIR, "last-url.txt"), "utf8").trim();
+    return /^https?:\/\//.test(v) ? v : "";
+  } catch {
+    return "";
+  }
+}
+
+{
+  const state = await probePort(PREFERRED_PORT);
+  if (state === "ours") {
+    const known = lastKnownUrl();
+    say("");
+    say(`  ${c.yellow}已经有一个咕咕点歌台在运行了${c.reset}（端口 ${PREFERRED_PORT}）。`);
+    say(`  ${c.bold}直接切回那个窗口就能看到安装地址${c.reset}，不用再开第二个。`);
+    if (known) {
+      say("");
+      say(`  上次的地址：${c.cyan}${known}${c.reset}`);
+      say(`  ${c.dim}（如果那个窗口重启过，地址会变，以窗口里显示的为准）${c.reset}`);
+    }
+    say("");
+    process.exit(0);
+  }
+  if (state === "busy") {
+    const picked = await pickPort(PREFERRED_PORT + 1);
+    if (picked.state === "free") {
+      say(`  ${c.dim}端口 ${PREFERRED_PORT} 被别的程序占用，改用 ${picked.port}${c.reset}`);
+      PORT = picked.port;
+    } else if (picked.state === "ours") {
+      say("");
+      say(`  ${c.yellow}咕咕点歌台正在 ${picked.port} 端口上运行${c.reset}，直接切回那个窗口即可。`);
+      say("");
+      process.exit(0);
+    } else {
+      say("");
+      say(`  ${c.red}端口被占用，且 ${PREFERRED_PORT} 起的 20 个端口都不可用。${c.reset}`);
+      say(`  ${c.dim}关掉别的程序后重试，或手动指定：点这个启动程序.bat --port 9000${c.reset}`);
+      say("");
+      process.exit(1);
+    }
+  }
+}
 
 const server = spawn(process.execPath, [path.join(ROOT, "server/index.js"), "--port", String(PORT)], {
   cwd: ROOT,
@@ -242,14 +329,18 @@ try {
   fs.writeFileSync(path.join(BIN_DIR, "last-url.txt"), installUrl + "\n", "utf8");
 } catch {}
 
-box([
-  `${c.bold}扩展安装地址${c.reset}`,
-  "",
-  `${c.cyan}${c.bold}${installUrl}${c.reset}`,
-]);
+const copied = copyToClipboard(installUrl);
 
-say(`  ${c.bold}安装方法${c.reset}：左下角三个点 → Extension → 右上角加号 → 粘贴上面的地址`);
 say("");
-say(`  ${c.dim}提示：这个窗口要一直开着；关掉或重启后地址会变，你需要重新复制地址安装。${c.reset}`);
+say(`  ${c.bold}扩展安装地址${c.reset}` + (copied ? `  ${c.green}（已自动复制到剪贴板）${c.reset}` : ""));
+say("");
+// 这一行只有地址本身：无缩进、无边框、无尾部补空格。
+// 三击即可整行选中，复制出来不会带上空格。
+say(`${c.cyan}${c.bold}${installUrl}${c.reset}`);
+say("");
+say(`  ${c.bold}安装方法${c.reset}：左下角三个点 → Extension → 右上角加号 → 粘贴`);
+say(`  ${c.dim}（地址已复制，直接粘贴即可；没复制成功就三击上面那行地址）${c.reset}`);
+say("");
+say(`  ${c.dim}提示：这个窗口要一直开着；关掉或重启后地址会变，需要重新安装一次。${c.reset}`);
 say("");
 

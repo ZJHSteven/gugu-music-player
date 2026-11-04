@@ -32,3 +32,9 @@ tools/ghd-zh.mjs
 .eac-music/
 /*.mp4
 tools/_*.mjs
+
+# 本地制作产物（不属于插件本体）
+pv.html
+发布文案.txt
+tools/_*.mjs
+tools/_*.py
