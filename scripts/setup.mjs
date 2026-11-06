@@ -7,6 +7,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
+import { runtimeDir, cloudflaredName, cloudflaredUrl } from "./platform.mjs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -249,17 +250,15 @@ serverUp = true;
 // ---------- 3. 可选：公网隧道 ----------
 let publicUrl = "";
 
-const cfName = os.platform() === "win32" ? "cloudflared.exe" : "cloudflared";
-// 随包自带的优先（放在 runtime/ 里，和 node.exe 一起）；其次是以前下载过的 .bin/
-const cfBundled = path.join(ROOT, "runtime", cfName);
+const cfName = cloudflaredName(os.platform());
+// 随包自带的优先：Windows 在 runtime/ 根下，macOS 在 runtime/darwin-<arch>/ 下
+const cfBundled = path.join(ROOT, runtimeDir(os.platform(), os.arch()), cfName);
 const cfDownloaded = path.join(BIN_DIR, cfName);
 const cfPath = fs.existsSync(cfBundled) ? cfBundled : cfDownloaded;
 
 function cfAsset() {
-  const p = os.platform();
-  if (p === "win32") return { url: "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe", file: cfName, tgz: false };
-  if (p === "darwin") return { url: "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64.tgz", file: "cloudflared.tar.gz", tgz: true };
-  return { url: "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64", file: cfName, tgz: false };
+  const asset = cloudflaredUrl(os.platform(), os.arch());
+  return { ...asset, file: asset.tgz ? "cloudflared.tar.gz" : cfName };
 }
 
 async function ensureCloudflared() {

@@ -1,4 +1,4 @@
-﻿# 咕咕点歌台
+# 咕咕点歌台
 
 一个 Owlbear Rodeo 的音乐播放插件。
 
@@ -154,3 +154,6 @@
 ---
 
 <sub>本项目使用 [MIT 许可证](LICENSE)。随包附带的 Node.js 与 cloudflared 各自遵循其原始许可，详见 LICENSE。</sub>
+
+macOS 用户：双击「启动.command」（已内置运行时，无需装 Node）。
+首次打开被系统拦：右键 → 打开 → 再点「打开」。

@@ -39,3 +39,6 @@ pv.html
 tools/_*.mjs
 tools/_*.py
 .update/
+
+# macOS 运行时二进制由发布包提供，不进仓库（体积各 140MB+）
+runtime/darwin-*/
