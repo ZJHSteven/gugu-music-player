@@ -8,7 +8,9 @@
 - 已完成：已安装 Electron 44.9.3 / electron-builder 26.18.0 并生成锁文件；npm 安装成功。
 - 已完成：原项目自测 42/42 通过；本机 Electron smoke test 成功，Electron 自带 Node 能启动 server/index.js 并正常返回 /api/health。
 - 已完成：已创建正式 GitHub Fork：ZJHSteven/gugu-music-player（parent 为 doveris263/gugu-music-player）。首次 macOS CI 秒退已定位为 GitHub 在 2026-11-02 退役 macos-14 runner，并改为 macos-15-intel / macos-15。
-- 正在做：把 Electron 改动推入 Fork 并重新触发 macOS x64/arm64 构建。
+- 已完成：发现上游在 2026-11-06 13:55 刚发布 v1.1.0，新增原生 macOS 双击 .command 与 Intel/Apple Silicon runtime 支持；Electron feature 分支已重建在 v1.1.0 之上。
+- 已完成：v1.1.0 基线上原项目 42/42、自带平台测试 12/12、Electron smoke test 全部通过；package-lock 已同步到 1.1.0。
+- 正在做：推送 feat/electron-macos-launcher 到 Fork；利用分支 push 触发 macOS x64/arm64 实机构建。
 - 下一步：把验证后的分支推到用户 GitHub 仓库，触发 macOS Actions 并下载可直接发群的 DMG/ZIP。
 
 ## 关键决策与理由

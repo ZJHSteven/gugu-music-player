@@ -2,6 +2,11 @@ name: Build Electron macOS QA
 
 on:
   workflow_dispatch:
+  # Fork 的 feature branch 还没合进默认分支时，workflow_dispatch 不一定可直接发现该工作流。
+  # 因此 QA 阶段在这个专用分支 push 时自动构建；正式 PR 前可以再去掉这一条。
+  push:
+    branches:
+      - feat/electron-macos-launcher
 
 jobs:
   build:
