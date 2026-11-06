@@ -3,14 +3,48 @@
   "version": "1.1.0",
   "private": true,
   "type": "module",
+  "main": "electron/main.mjs",
   "license": "MIT",
   "description": "Owlbear Rodeo 房间音乐插件：GM 播放本地音乐 / B 站音频，全房间同步收听",
   "engines": { "node": ">=18.17" },
   "scripts": {
     "start": "node server/index.js",
+    "electron": "electron .",
+    "dist:mac:x64": "electron-builder --mac --x64",
+    "dist:mac:arm64": "electron-builder --mac --arm64",
     "vendor": "node tools/vendor-sdk.mjs",
     "selftest": "node tools/selftest.mjs",
     "uitest": "node tools/uitest.mjs",
     "check-release": "node tools/check-release.mjs"
+  },
+  "devDependencies": {
+    "electron": "44.9.3",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "com.gugu.musicplayer",
+    "productName": "咕咕点歌台",
+    "asar": false,
+    "files": [
+      "electron/**/*",
+      "server/**/*",
+      "public/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/cloudflared",
+        "to": "cloudflared"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.music",
+      "identity": null,
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "artifactName": "gugu-music-player-${version}-mac-${arch}.${ext}"
   }
 }

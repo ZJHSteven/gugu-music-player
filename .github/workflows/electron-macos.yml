@@ -1,0 +1,88 @@
+name: Build Electron macOS QA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: macOS ${{ matrix.arch }}
+    runs-on: macos-14
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+
+    env:
+      # 首轮 QA 没有 Apple Developer ID，明确关闭证书自动发现。
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run existing server self-test
+        run: npm run selftest
+
+      - name: Download matching cloudflared
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build /tmp/gugu-cloudflared
+          if [[ "${{ matrix.arch }}" == "arm64" ]]; then
+            url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64.tgz"
+          else
+            url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64.tgz"
+          fi
+          curl --fail --location --retry 3 "$url" -o /tmp/cloudflared.tgz
+          tar -xzf /tmp/cloudflared.tgz -C /tmp/gugu-cloudflared
+          cp /tmp/gugu-cloudflared/cloudflared build/cloudflared
+          chmod +x build/cloudflared
+          file build/cloudflared
+
+      - name: Build DMG and ZIP
+        shell: bash
+        run: npx electron-builder --mac --${{ matrix.arch }}
+
+      - name: Verify packaged resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_path="$(find dist -type d -name '*.app' -maxdepth 3 | head -n 1)"
+          test -n "$app_path"
+          test -f "$app_path/Contents/Resources/cloudflared"
+          test -f "$app_path/Contents/Resources/app/server/index.js"
+          test -f "$app_path/Contents/Resources/app/public/manifest.json"
+          file "$app_path/Contents/Resources/cloudflared"
+          echo "APP_PATH=$app_path" >> "$GITHUB_ENV"
+
+      - name: Smoke test packaged Electron runtime when architecture matches runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          runner_arch="$(uname -m)"
+          want="${{ matrix.arch }}"
+          if [[ "$runner_arch" == "x86_64" && "$want" == "x64" ]] || +             [[ "$runner_arch" == "arm64" && "$want" == "arm64" ]]; then
+            exe="$(find "$APP_PATH/Contents/MacOS" -type f -maxdepth 1 | head -n 1)"
+            "$exe" --smoke-test
+          else
+            echo "Runner=$runner_arch, package=$want；跳过不可本机执行的架构。"
+          fi
+
+      - name: Upload QA packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: gugu-music-player-macos-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
+            dist/*.dmg
+            dist/*.zip

@@ -42,3 +42,8 @@ tools/_*.py
 
 # macOS 运行时二进制由发布包提供，不进仓库（体积各 140MB+）
 runtime/darwin-*/
+
+# Electron 本地依赖与构建产物。
+dist/
+build/cloudflared
+build/cloudflared.exe

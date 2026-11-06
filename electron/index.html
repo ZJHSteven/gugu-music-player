@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:;"
+    />
+    <title>咕咕点歌台</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <div class="brand">♪</div>
+        <div>
+          <h1>咕咕点歌台</h1>
+          <p>不用 Node.js，不用命令行。保持这个窗口打开即可。</p>
+        </div>
+      </header>
+
+      <section class="status-card">
+        <div class="status-line">
+          <span id="dot" class="dot"></span>
+          <strong id="status">正在启动…</strong>
+        </div>
+        <p id="message" class="muted">正在准备本地音乐服务。</p>
+      </section>
+
+      <section class="url-card">
+        <label for="url">Owlbear 扩展安装地址</label>
+        <div class="url-row">
+          <input id="url" readonly placeholder="公网地址生成后会自动出现在这里" />
+          <button id="copy" class="primary" disabled>复制地址</button>
+        </div>
+        <p class="hint">Owlbear → Extension → ＋ → 粘贴这个地址。玩家不需要安装本应用。</p>
+      </section>
+
+      <div class="actions">
+        <button id="owlbear">打开 Owlbear Rodeo</button>
+        <button id="restart">重新启动服务</button>
+      </div>
+
+      <details>
+        <summary>诊断日志</summary>
+        <pre id="logs">等待日志…</pre>
+      </details>
+
+      <footer>
+        <span id="local"></span>
+        <span>关闭本窗口会停止音乐服务。</span>
+      </footer>
+    </main>
+    <script type="module" src="./renderer.js"></script>
+  </body>
+</html>
