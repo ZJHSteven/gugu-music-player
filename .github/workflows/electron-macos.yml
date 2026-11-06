@@ -42,7 +42,9 @@ jobs:
         run: npm ci
 
       - name: Run existing server self-test
-        run: npm run selftest
+        # B 站会针对部分海外云机返回风控 HTML；这不应阻塞桌面打包。
+        # 本地完整测试仍会覆盖 B 站，这里只跳过依赖外部网站的两项。
+        run: SKIP_BILIBILI=1 npm run selftest
 
       - name: Download matching cloudflared
         shell: bash

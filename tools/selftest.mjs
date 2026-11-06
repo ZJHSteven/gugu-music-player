@@ -339,25 +339,32 @@ check("玩家 SSE 没有 state / 歌单", () => {
 });
 
 console.log("\n[7] B 站");
-const bili = await json(
-  await fetch(`${BASE}/api/rooms/${ROOM}/tracks/bilibili`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${gmToken}` },
-    body: JSON.stringify({ url: "https://www.bilibili.com/video/BV1k7xy6fEtL" }),
-  })
-);
-check("B 站链接解析成功", () => {
-  assert.equal(bili.status, 200, JSON.stringify(bili.body));
-  assert.ok(bili.body.track.duration > 0);
-  assert.ok(bili.body.track.title.length > 0);
-});
+// GitHub 的海外 macOS runner 偶尔会被 B 站返回 HTML 风控页，
+// 这不是本地服务或 Electron 打包故障。CI 可以显式设置 SKIP_BILIBILI=1，
+// 只跳过这两个“依赖外部网站”的在线集成断言，其余本地协议测试仍全部执行。
+if (process.env.SKIP_BILIBILI === "1") {
+  console.log("  - 已跳过 B 站在线集成测试（SKIP_BILIBILI=1）");
+} else {
+  const bili = await json(
+    await fetch(`${BASE}/api/rooms/${ROOM}/tracks/bilibili`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${gmToken}` },
+      body: JSON.stringify({ url: "https://www.bilibili.com/video/BV1k7xy6fEtL" }),
+    })
+  );
+  check("B 站链接解析成功", () => {
+    assert.equal(bili.status, 200, JSON.stringify(bili.body));
+    assert.ok(bili.body.track.duration > 0);
+    assert.ok(bili.body.track.title.length > 0);
+  });
 
-const biliAudio = await fetch(`${BASE}/audio/${ROOM}/${bili.body.track.id}`, { headers: { Range: "bytes=0-2047" } });
-const biliBuf = Buffer.from(await biliAudio.arrayBuffer());
-check("B 站音轨代理可取到字节", () => {
-  assert.ok([200, 206].includes(biliAudio.status));
-  assert.ok(biliBuf.length > 1000);
-});
+  const biliAudio = await fetch(`${BASE}/audio/${ROOM}/${bili.body.track.id}`, { headers: { Range: "bytes=0-2047" } });
+  const biliBuf = Buffer.from(await biliAudio.arrayBuffer());
+  check("B 站音轨代理可取到字节", () => {
+    assert.ok([200, 206].includes(biliAudio.status));
+    assert.ok(biliBuf.length > 1000);
+  });
+}
 
 console.log("\n[8] 自动切歌");
 const R2 = "autoadv";
