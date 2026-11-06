@@ -5,7 +5,8 @@
 - 现状：上游 v1.0.3 是 Node 服务 + cloudflared Quick Tunnel；Windows 发布包内置 Node/cloudflared，macOS/Linux 仍要求系统安装 Node。
 - 已完成：完成上游架构审计；创建 Electron 二开工作副本；核对 Electron 与 electron-builder 最新文档。
 - 已完成：Electron Launcher 初版、最小安全 IPC、自动启动/停止服务、Quick Tunnel URL 提取、macOS x64/arm64 electron-builder 配置、GitHub Actions 构建与 packaged smoke-test 流程。
-- 正在做：安装依赖并进行本机 Windows 逻辑测试，修正实际打包兼容问题。
+- 已完成：已安装 Electron 44.9.3 / electron-builder 26.18.0 并生成锁文件；npm 安装成功。
+- 正在做：进行语法检查、原项目自测和 Electron 本机启动链测试，修正实际打包兼容问题。
 - 下一步：把验证后的分支推到用户 GitHub 仓库，触发 macOS Actions 并下载可直接发群的 DMG/ZIP。
 
 ## 关键决策与理由
