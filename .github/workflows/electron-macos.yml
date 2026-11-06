@@ -85,7 +85,7 @@ jobs:
           set -euo pipefail
           runner_arch="$(uname -m)"
           want="${{ matrix.arch }}"
-          if [[ "$runner_arch" == "x86_64" && "$want" == "x64" ]] || +             [[ "$runner_arch" == "arm64" && "$want" == "arm64" ]]; then
+          if [[ "$runner_arch" == "x86_64" && "$want" == "x64" ]] || [[ "$runner_arch" == "arm64" && "$want" == "arm64" ]]; then
             exe="$(find "$APP_PATH/Contents/MacOS" -type f -maxdepth 1 | head -n 1)"
             "$exe" --smoke-test
           else

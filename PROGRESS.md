@@ -14,7 +14,9 @@
 - 已完成：selftest 新增显式 SKIP_BILIBILI=1，仅供 CI 跳过两项外部 B 站在线断言；其余本地测试仍严格执行，本机完整 B 站测试此前已通过。
 - 已完成：第二次 macOS CI 已实际生成 arm64 DMG/ZIP 到 blockmap 阶段；失败点是 electron-builder 在 CI 自动尝试发布 GitHub Release 并要求 GH_TOKEN，与包本体无关。
 - 已完成：构建命令显式增加 --publish never，确保 QA CI 只生成并上传 artifact，不尝试发布 Release。
-- 正在做：第三次 macOS x64/arm64 构建，继续验证 packaged resources、真实 Electron smoke test 与 artifact 上传。
+- 已完成：第三次 arm64 构建已成功生成 DMG/ZIP，且打包资源校验通过（cloudflared 为 arm64 Mach-O，server/public 均存在）；smoke-test 未真正启动应用，原因是 CI Bash 条件行误带一个字面 '+'。
+- 已完成：已修复 smoke-test 条件语法。
+- 正在做：第四次 macOS x64/arm64 构建，目标是完成真实 packaged Electron 启动与 artifact 上传。
 - 下一步：把验证后的分支推到用户 GitHub 仓库，触发 macOS Actions 并下载可直接发群的 DMG/ZIP。
 
 ## 关键决策与理由
