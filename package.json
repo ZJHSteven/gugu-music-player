@@ -10,8 +10,8 @@
   "scripts": {
     "start": "node server/index.js",
     "electron": "electron .",
-    "dist:mac:x64": "electron-builder --mac --x64",
-    "dist:mac:arm64": "electron-builder --mac --arm64",
+    "dist:mac:x64": "electron-builder --mac --x64 --publish never",
+    "dist:mac:arm64": "electron-builder --mac --arm64 --publish never",
     "vendor": "node tools/vendor-sdk.mjs",
     "selftest": "node tools/selftest.mjs",
     "uitest": "node tools/uitest.mjs",

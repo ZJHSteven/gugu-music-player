@@ -12,7 +12,9 @@
 - 已完成：v1.1.0 基线上原项目 42/42、自带平台测试 12/12、Electron smoke test 全部通过；package-lock 已同步到 1.1.0。
 - 已完成：第一次真实 macOS CI 已跑到自测阶段；x64/arm64 均因 GitHub 海外 runner 访问 B 站得到 HTML 风控页而失败，日志确认不是 Electron/本地服务故障。
 - 已完成：selftest 新增显式 SKIP_BILIBILI=1，仅供 CI 跳过两项外部 B 站在线断言；其余本地测试仍严格执行，本机完整 B 站测试此前已通过。
-- 正在做：重新触发 macOS x64/arm64 构建，继续验证 cloudflared 打包、DMG/ZIP 产物和 packaged Electron smoke test。
+- 已完成：第二次 macOS CI 已实际生成 arm64 DMG/ZIP 到 blockmap 阶段；失败点是 electron-builder 在 CI 自动尝试发布 GitHub Release 并要求 GH_TOKEN，与包本体无关。
+- 已完成：构建命令显式增加 --publish never，确保 QA CI 只生成并上传 artifact，不尝试发布 Release。
+- 正在做：第三次 macOS x64/arm64 构建，继续验证 packaged resources、真实 Electron smoke test 与 artifact 上传。
 - 下一步：把验证后的分支推到用户 GitHub 仓库，触发 macOS Actions 并下载可直接发群的 DMG/ZIP。
 
 ## 关键决策与理由

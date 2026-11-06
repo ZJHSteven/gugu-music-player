@@ -64,7 +64,8 @@ jobs:
 
       - name: Build DMG and ZIP
         shell: bash
-        run: npx electron-builder --mac --${{ matrix.arch }}
+        # electron-builder 在 CI 中默认会尝试自动发布；这里只需要构建 artifact。
+        run: npx electron-builder --mac --${{ matrix.arch }} --publish never
 
       - name: Verify packaged resources
         shell: bash
