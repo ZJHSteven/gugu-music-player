@@ -16,7 +16,10 @@
 - 已完成：构建命令显式增加 --publish never，确保 QA CI 只生成并上传 artifact，不尝试发布 Release。
 - 已完成：第三次 arm64 构建已成功生成 DMG/ZIP，且打包资源校验通过（cloudflared 为 arm64 Mach-O，server/public 均存在）；smoke-test 未真正启动应用，原因是 CI Bash 条件行误带一个字面 '+'。
 - 已完成：已修复 smoke-test 条件语法。
-- 正在做：第四次 macOS x64/arm64 构建，目标是完成真实 packaged Electron 启动与 artifact 上传。
+- 已完成：第四次 macOS QA CI 全绿。arm64（macos-15 Apple Silicon）与 x64（macos-15-intel）均完成：40 项不依赖 B 站的服务自测、匹配架构 cloudflared 下载、DMG/ZIP 构建、包内资源校验、打包后 Electron 真实启动 smoke test、artifact 上传。
+- 已完成：Fork 预发布 electron-qa-v1.1.0-1 已上传四个公开 QA 文件：arm64 DMG/ZIP 与 x64 DMG/ZIP。
+- 当前状态：Electron macOS 傻瓜包已达到群内真人 QA 条件；仍为未签名/未 notarize 的 QA 包，首次启动可能触发 Gatekeeper。
+- 下一步：收集真人 QA（首次启动、Gatekeeper、Quick Tunnel 建连、复制 manifest、Owlbear 安装、播放/退出清理）后再整理提交并向 doveris263/gugu-music-player 提 PR。
 - 下一步：把验证后的分支推到用户 GitHub 仓库，触发 macOS Actions 并下载可直接发群的 DMG/ZIP。
 
 ## 关键决策与理由
