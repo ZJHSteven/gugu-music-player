@@ -35,7 +35,7 @@ export function decodeChunk(input) {
   if (!n || n > MAX_HEADER || raw.byteLength - 4 - n < 1) throw new Error("帧头长度不正确");
   const head = JSON.parse(decoder.decode(raw.subarray(4, 4 + n)));
   if (
-    !HASH_RE.test(head.hash) || !PEER_RE.test(head.to) ||
+    !HASH_RE.test(head.hash) || !PEER_RE.test(head.to) || !PEER_RE.test(head.from) ||
     !Number.isInteger(head.index) || !Number.isInteger(head.total) ||
     head.index < 0 || head.total <= 0 || head.index >= head.total ||
     head.total > Math.ceil(MAX_AUDIO_SIZE / CHUNK_SIZE)

@@ -75,7 +75,9 @@ async function transfer(from, to, bytes) {
   for (let index = 0; index < count; index++) {
     const first = index * CHUNK_SIZE;
     while (from.ws.bufferedAmount > 2 * 1024 * 1024) await new Promise((r) => setTimeout(r, 10));
-    from.ws.send(encodeChunk({ to: to.peer, hash, index, total: count }, bytes.subarray(first, first + CHUNK_SIZE)));
+    from.ws.send(encodeChunk({
+      from: from.peer, to: to.peer, hash, index, total: count,
+    }, bytes.subarray(first, first + CHUNK_SIZE)));
   }
   const duration = await result;
   console.log(`✓ ${(bytes.length / (1024 * 1024)).toFixed(1)} MiB 跨 DO 中继通过，${duration}ms，SHA-256 一致`);

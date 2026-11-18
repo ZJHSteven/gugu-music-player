@@ -57,7 +57,8 @@ export class RoomRelay extends DurableObject {
       try {
         const { header } = decodeChunk(message);
         // DO 不接受尚未声明拥有哈希的发送者，也不接受向自己发包。
-        if (!me.hashes?.includes(header.hash) || header.to === me.peer) return;
+        if (!me.hashes?.includes(header.hash) ||
+            header.to === me.peer || header.from !== me.peer) return;
         const peer = this.peers().find((p) => p.info.peer === header.to);
         if (peer) peer.ws.send(message);
       } catch {
@@ -100,6 +101,18 @@ export class RoomRelay extends DurableObject {
         if (!me.hashes?.includes(data.hash)) return;
         const dest = this.peers().find((p) => p.info.peer === data.to);
         dest?.ws.send(JSON.stringify({ t: "done", hash: data.hash }));
+        break;
+      }
+      case "ack": {
+        // 接收者每收到一组音频块只回一次 ACK。DO 只转发 ACK，绝不持有文件。
+        if (!HASH_RE.test(data.hash) || !PEER_RE.test(data.to) ||
+            !Number.isInteger(data.index) || data.index < 0 || data.index > 255) return;
+        const source = this.peers().find(
+          (p) => p.info.peer === data.to && p.info.hashes?.includes(data.hash)
+        );
+        source?.ws.send(JSON.stringify({
+          t: "ack", hash: data.hash, from: me.peer, index: data.index,
+        }));
         break;
       }
       default: break;
