@@ -3,6 +3,10 @@
   "name": "gugu-music-cloud",
   "main": "./cloud-worker/index.js",
   "compatibility_date": "2026-11-18",
+  "workers_dev": true,
+  "routes": [
+    { "pattern": "music.zjhstudio.com", "custom_domain": true }
+  ],
   "assets": {
     "directory": "./dist-cloud",
     "binding": "ASSETS",
