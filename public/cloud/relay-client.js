@@ -23,6 +23,7 @@ export class RelayClient {
     this.owned = new Set();
     this.requested = new Set();
     this.incoming = new Map();
+    this.transferTimeouts = new Map();
     this.stopped = false;
     this.reconnectDelay = 500;
   }
@@ -54,6 +55,26 @@ export class RelayClient {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     this.requested.add(hash);
     this.send({ t: "need", hash });
+    this.watchTransfer(hash);
+  }
+
+  /** 在浏览器侧检测断流：不会定时唤醒 DO；只在确实缺失文件时尝试重新取源。 */
+  watchTransfer(hash) {
+    this.clearTransferTimeout(hash);
+    const timer = setTimeout(() => {
+      this.transferTimeouts.delete(hash);
+      if (this.stopped || this.owned.has(hash)) return;
+      // 旧源可能已下线，清理不完整缓存，再从当前在线节点重新请求。
+      this.requested.delete(hash);
+      this.incoming.delete(hash);
+      this.request(hash);
+    }, 30000);
+    this.transferTimeouts.set(hash, timer);
+  }
+
+  clearTransferTimeout(hash) {
+    clearTimeout(this.transferTimeouts.get(hash));
+    this.transferTimeouts.delete(hash);
   }
 
   /** WebSocket 关闭后按需重建，不使用高频保活/心跳。 */
@@ -66,6 +87,8 @@ export class RelayClient {
       this.reconnectDelay = 500;
       this.requested.clear();
       this.incoming.clear();
+      for (const timeout of this.transferTimeouts.values()) clearTimeout(timeout);
+      this.transferTimeouts.clear();
       this.updateTracks(this.tracks).catch(this.onError);
     };
     ws.onmessage = (e) => {
@@ -77,6 +100,8 @@ export class RelayClient {
       this.ws = null;
       this.requested.clear();
       this.incoming.clear();
+      for (const timeout of this.transferTimeouts.values()) clearTimeout(timeout);
+      this.transferTimeouts.clear();
       if (this.stopped) return;
       const delay = this.reconnectDelay;
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
@@ -106,6 +131,7 @@ export class RelayClient {
         break;
       case "unavailable":
         this.requested.delete(msg.hash);
+        this.clearTransferTimeout(msg.hash);
         break;
       case "done":
         // 内容收集以 total/index 为准。done 只是源端完成发送，不等于文件验收成功。
@@ -148,6 +174,7 @@ export class RelayClient {
     if (bytes.byteLength !== expected) return;
     rec.chunks[header.index] = bytes.slice();
     rec.size += bytes.byteLength;
+    this.watchTransfer(header.hash);
     if (rec.size !== t.size || rec.chunks.some((part) => !part)) return;
     rec.complete = true;
     const blob = new Blob(rec.chunks, { type: t.mime || "audio/mpeg" });
@@ -156,10 +183,12 @@ export class RelayClient {
       await putAudio(header.hash, blob);
       this.owned.add(header.hash);
       this.requested.delete(header.hash);
+      this.clearTransferTimeout(header.hash);
       await this.announce(header.hash);
       this.onFile(header.hash);
     } catch (err) {
       this.requested.delete(header.hash);
+      this.clearTransferTimeout(header.hash);
       this.onError(err);
     } finally {
       this.incoming.delete(header.hash);
@@ -168,6 +197,8 @@ export class RelayClient {
 
   close() {
     this.stopped = true;
+    for (const timeout of this.transferTimeouts.values()) clearTimeout(timeout);
+    this.transferTimeouts.clear();
     this.ws?.close();
     this.ws = null;
   }
