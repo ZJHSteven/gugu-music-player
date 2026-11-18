@@ -106,7 +106,15 @@ class Page {
         m.error ? reject(new Error(m.error.message)) : resolve(m.result);
         return;
       }
-      if (m.method === "Runtime.exceptionThrown") this.errors.push(m.params.exceptionDetails.text || "exception");
+      if (m.method === "Runtime.exceptionThrown") {
+        // Chrome 的 exceptionDetails.text 经常只有“Uncaught”，完全无法定位
+        // 具体 JS 错误；优先保存真实 Error 的 description（含脚本 URL 与堆栈）。
+        const details = m.params.exceptionDetails;
+        const description = details.exception?.description ||
+          details.exception?.value ||
+          details.text || "exception";
+        this.errors.push(String(description));
+      }
     });
   }
   send(method, params = {}) {
