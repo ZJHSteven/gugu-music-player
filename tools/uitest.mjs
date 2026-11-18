@@ -98,6 +98,7 @@ class Page {
     this.seq = 0;
     this.pending = new Map();
     this.errors = [];
+    this.externalExtensionErrors = [];
     ws.addEventListener("message", (ev) => {
       const m = JSON.parse(ev.data);
       if (m.id && this.pending.has(m.id)) {
@@ -113,7 +114,15 @@ class Page {
         const description = details.exception?.description ||
           details.exception?.value ||
           details.text || "exception";
-        this.errors.push(String(description));
+        // 测试使用隔离 Edge Profile，但机器级安装的第三方浏览器扩展仍可能
+        // 注入 content script。它们的错误归属 chrome-extension:// 或
+        // edge-extension://，不能据此宣称当前网站出现 JS 回归。
+        // 只过滤有明确脚本 URL 证据的扩展错误；站点自己的错误全部保留。
+        if (/\b(?:chrome|edge)-extension:\/\//i.test(String(description) + " " + String(details.url || ""))) {
+          this.externalExtensionErrors.push(String(description));
+        } else {
+          this.errors.push(String(description));
+        }
       }
     });
   }
