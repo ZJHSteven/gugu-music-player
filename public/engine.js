@@ -3,6 +3,8 @@
 // 平时跑在 background.html（隐藏页面，面板关掉也不停）；
 // 若 OBR 没加载后台页，浮窗会自己拉起一份（self-heal），后台上线后自动让位。
 import { apiBase, apiGet, apiPost, lsGet, lsSet, lsDel, tokenKey, createBus, tabId, report } from "./lib.js";
+import { initCloudBridge } from "./cloud/bridge.js";
+import { getAudio } from "./cloud/storage.js";
 
 // 同步策略（三层，由轻到重）：
 //   1. 偏差 < DEADBAND      → 不动
@@ -82,6 +84,29 @@ export class Engine {
     this.emitStatus();
     report("engine-start", { kind: this.kind, role: this.role, roomId: this.roomId, tab: tabId(), attempts: this.attempts });
 
+    // 云版播放控制走 Owlbear，不启动 SSE、轮询、Node 心跳或服务器时钟同步。
+    if (window.BARD_CLOUD) {
+      this.cloud = await initCloudBridge(this.OBR, this.role, this.roomId);
+      this.token = this.role === "GM" ? "cloud-gm" : "";
+      this.connected = true;
+      this.cloud.subscribe((state, now) => {
+        this.state = state;
+        this.bus.post({ t: "state", state });
+        this.onNow(now);
+      });
+      this.cloud.onFile((hash) => {
+        if (this.now?.track?.hash === hash) {
+          // 原本尚无本地文件时播放会暂停；新副本到达应直接重试。
+          this.src = "";
+          this.applyPlayback(true);
+        }
+      });
+      this.emitStatus();
+      this.timers.push(setInterval(() => this.tick(), 500));
+      this.timers.push(setInterval(() => this.bus.post({ t: "hello", kind: this.kind, role: this.role }), 12000));
+      return;
+    }
+
     await this.syncClock();
     if (this.role === "GM") await this.ensureOwner();
 
@@ -117,6 +142,16 @@ export class Engine {
    */
   async becomeOwner() {
     if (this.stopped) return;
+    if (window.BARD_CLOUD) {
+      if (await this.cloud?.isGM()) {
+        this.role = "GM";
+        this.token = "cloud-gm";
+        this.emitStatus();
+      } else {
+        this.bus.post({ t: "error", error: "只有 Owlbear 房主才能控制云端歌单" });
+      }
+      return;
+    }
     this.role = "GM";
     await this.ensureOwner();
     if (!this.token) {
@@ -132,6 +167,11 @@ export class Engine {
 
   /** 主动让出：先停掉心跳，否则会自动把控制权抢回来。 */
   async releaseOwnership() {
+    if (window.BARD_CLOUD) {
+      this.token = "";
+      this.emitStatus();
+      return;
+    }
     const t = this.token;
     this.stopGmLoops();
     this.token = "";
@@ -164,6 +204,11 @@ export class Engine {
 
   // ---------- 主持权 ----------
   async ensureOwner() {
+    if (window.BARD_CLOUD) {
+      this.token = (await this.cloud?.isGM()) ? "cloud-gm" : "";
+      this.emitStatus();
+      return;
+    }
     try {
       const name = await this.OBR.player.getName().catch(() => "GM");
       const res = await apiPost(`/api/rooms/${encodeURIComponent(this.roomId)}/claim`, {
@@ -451,6 +496,43 @@ export class Engine {
     if (!p) return;
     if (!track?.src) return this.halt();
 
+    if (window.BARD_CLOUD && track.src.startsWith("cloud:")) {
+      // Blob URL 由每名玩家本地 OPFS/IndexedDB 生成。DO 不返回歌曲 URL，
+      // 浏览器也不会尝试向 Worker 请求 /audio/...。
+      if (this.src !== track.src) {
+        this.src = track.src;
+        this.shortFade = true;
+        this.pendingSeek = this.target();
+        if (this.cloudBlobUrl) URL.revokeObjectURL(this.cloudBlobUrl);
+        this.cloudBlobUrl = null;
+        this.audio.pause();
+        this.audio.removeAttribute("src");
+        this.audio.load();
+        getAudio(track.hash).then((file) => {
+          if (this.stopped || this.src !== track.src) return;
+          if (!file) {
+            this.src = ""; // 缺文件先保持静音，待中继完成后重试
+            return;
+          }
+          this.cloudBlobUrl = URL.createObjectURL(file);
+          this.audio.src = this.cloudBlobUrl;
+          this.resetRate();
+          this.audio.load();
+          this.applyVolume();
+          if (this.now?.playback?.playing) this.play();
+        }).catch((err) => {
+          this.src = "";
+          report("cloud-audio-error", { message: String(err) });
+        });
+        return;
+      }
+      this.applyVolume();
+      if (p.playing) this.play();
+      else this.pause();
+      if (sync) this.correctDrift();
+      return;
+    }
+
     if (this.src !== track.src) {
       // 切歌不淡出：旧曲立刻被替换，多一段淡出只会让人觉得「点了没反应」。
       // 新曲用短淡入收一下开头，避免爆音。
@@ -536,6 +618,10 @@ export class Engine {
   halt() {
     this.resetRate();
     this.src = "";
+    if (this.cloudBlobUrl) {
+      URL.revokeObjectURL(this.cloudBlobUrl);
+      this.cloudBlobUrl = null;
+    }
     this.pendingSeek = null;
     try {
       this.audio.pause();
@@ -546,7 +632,7 @@ export class Engine {
 
   onEnded() {
     if (this.role !== "GM" || !this.token) return;
-    if (Number(this.now?.track?.duration || 0) > 0) return; // 服务端会切歌
+    if (!window.BARD_CLOUD && Number(this.now?.track?.duration || 0) > 0) return; // 原版 Node 会自动切歌
     this.command({ type: "ended" });
   }
 
@@ -719,6 +805,10 @@ export class Engine {
 
   /** 立刻取一次当前状态（拖动/操作后用，避免等一个轮询周期）。 */
   async refreshNow() {
+    if (window.BARD_CLOUD) {
+      if (this.cloud?.getNow()) this.onNow(this.cloud.getNow());
+      return;
+    }
     try {
       const now = await (await fetch(`${apiBase()}/api/rooms/${encodeURIComponent(this.roomId)}/now`, { cache: "no-store" })).json();
       const prevSeq = this.now?.playback?.seq;

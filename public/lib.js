@@ -75,12 +75,23 @@ async function parse(res) {
 }
 
 export async function apiGet(path, token) {
+  // 云版前端的房间控制完全由 Owlbear 房间元数据承担，不访问 Node API。
+  // 延迟初始化时仅允许 /api/update 读取空状态；其余必须先拿到云 Bridge。
+  if (window.BARD_CLOUD) {
+    if (path === "/api/update") return { current: "云端版", hasUpdate: false };
+    if (!window.__cloudBridge) throw new Error("云端房间尚未初始化");
+    return window.__cloudBridge.apiGet(path);
+  }
   return parse(
     await fetch(apiBase() + path, { headers: token ? { Authorization: `Bearer ${token}` } : {}, cache: "no-store" })
   );
 }
 
 export async function apiPost(path, body, token) {
+  if (window.BARD_CLOUD) {
+    if (!window.__cloudBridge) throw new Error("云端房间尚未初始化");
+    return window.__cloudBridge.apiPost(path, body);
+  }
   return parse(
     await fetch(apiBase() + path, {
       method: "POST",
@@ -92,6 +103,10 @@ export async function apiPost(path, body, token) {
 
 /** 上传音频（XHR 才有上传进度）。 */
 export function uploadTrack({ roomId, token, file, duration, folder, onProgress }) {
+  if (window.BARD_CLOUD) {
+    if (!window.__cloudBridge) return Promise.reject(new Error("云端房间尚未初始化"));
+    return window.__cloudBridge.uploadTrack({ file, duration, folder, onProgress });
+  }
   return new Promise((resolve, reject) => {
     const qs = new URLSearchParams({
       name: file.name || "音频",
@@ -138,6 +153,8 @@ export function mediaDuration(file) {
 
 /** 现场诊断：扩展在 OBR 里起不来时，服务端日志是唯一线索。 */
 export function report(kind, detail) {
+  // 云版无 Node /api/report：不能持续发送诊断请求导致额度损耗。
+  if (window.BARD_CLOUD) return;
   try {
     fetch(`${apiBase()}/api/report`, {
       method: "POST",

@@ -1,6 +1,7 @@
 // 浮窗界面：GM 看到控制台，玩家只看到「正在播放 + 自己的音量」。
 import { initOBR, createBus, apiGet, apiPost, uploadTrack, mediaDuration, lsGet, lsSet, lsDel, tokenKey, report } from "./lib.js";
 import { Engine } from "./engine.js";
+import { initCloudBridge } from "./cloud/bridge.js";
 
 window.__appBuild = "build-folders-1";
 
@@ -413,7 +414,8 @@ function toast(text, kind = "info", ms = 4000) {
   }
 }
 
-const token = () => lsGet(tokenKey(S.roomId), "") || "";
+// Cloud 模式的权限直接来自 Owlbear 的 GM 角色；旧版仍使用服务端主持令牌。
+const token = () => (window.BARD_CLOUD && S.role === "GM") ? "cloud-gm" : lsGet(tokenKey(S.roomId), "") || "";
 
 async function command(body) {
   if (!token()) return toast("还没有控制权", "err");
@@ -819,6 +821,14 @@ async function boot() {
   const { OBR, role, roomId, attempts, ready } = await initOBR();
   S.role = role;
   S.roomId = roomId;
+  if (window.BARD_CLOUD && roomId) {
+    const cloud = await initCloudBridge(OBR, role, roomId);
+    cloud.subscribe((state, now) => {
+      S.state = state;
+      S.now = now;
+      render(true);
+    });
+  }
   const tab = new URLSearchParams(location.search).get("tab");
   if (["list", "add", "settings"].includes(tab)) S.tab = tab;
 
