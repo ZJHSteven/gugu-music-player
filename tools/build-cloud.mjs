@@ -12,7 +12,10 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = path.join(root, "public");
 const destination = path.join(root, "dist-cloud");
-await fs.rm(destination, { recursive: true, force: true });
+// 开发服务器在 Windows 上读取静态文件时可能锁定输出目录，整个 rmdir 会报
+// EBUSY。直接覆盖拷贝只更新受 Git 管理的 public/ 资源，不影响正在运行的服务。
+// 全新 worktree 的 dist-cloud/ 本来不存在；正式部署可用 rm -r 离线清理旧产物。
+await fs.mkdir(destination, { recursive: true });
 await fs.cp(source, destination, { recursive: true });
 await fs.writeFile(path.join(destination, "config.js"),
   "// 云版：播放同步在 Owlbear，文件中转只使用 Durable Objects。\n" +
