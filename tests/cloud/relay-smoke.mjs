@@ -15,6 +15,13 @@ import { randomBytes, createHash, randomUUID } from "node:crypto";
 import { encodeChunk, decodeChunk, CHUNK_SIZE } from "../../public/cloud/wire.js";
 
 const base = process.env.GUGU_RELAY_URL || "ws://127.0.0.1:8789/relay";
+// 公网跨境线路可能明显慢于本地 Miniflare；通过环境变量允许用 2+4 MiB
+// 做较短的生产冒烟测试，同时保留默认 2+30 MiB 的完整压力测试。
+const smallMiB = Number(process.env.GUGU_SMALL_MIB || 2);
+const largeMiB = Number(process.env.GUGU_LARGE_MIB || 30);
+if (![smallMiB, largeMiB].every((x) => x > 0 && x <= 64 && Number.isInteger(x))) {
+  throw new Error("GUGU_SMALL_MIB / GUGU_LARGE_MIB 必须是 1～64 的整数");
+}
 const room = "smoke-" + randomUUID().slice(0, 12);
 const key = randomBytes(16).toString("hex");
 const url = `${base}?room=${room}&key=${key}`;
@@ -88,10 +95,10 @@ const gm = await client();
 const a = await client();
 const b = await client();
 try {
-  await transfer(gm, a, randomBytes(2 * 1024 * 1024));
+  await transfer(gm, a, randomBytes(smallMiB * 1024 * 1024));
   gm.ws.close();
   // 即使上传源 GM 离开，仍在房间中的玩家 A 可以继续作为源。
-  await transfer(a, b, randomBytes(30 * 1024 * 1024));
+  await transfer(a, b, randomBytes(largeMiB * 1024 * 1024));
   console.log("✓ GM 下线后玩家之间文件互传通过");
 } finally {
   gm.ws.close(); a.ws.close(); b.ws.close();
