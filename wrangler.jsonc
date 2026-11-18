@@ -1,0 +1,19 @@
+{
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "gugu-music-cloud",
+  "main": "./cloud-worker/index.js",
+  "compatibility_date": "2026-11-18",
+  "assets": {
+    "directory": "./dist-cloud",
+    "binding": "ASSETS",
+    "run_worker_first": ["/relay"]
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "ROOM_RELAY", "class_name": "RoomRelay" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["RoomRelay"] }
+  ]
+}

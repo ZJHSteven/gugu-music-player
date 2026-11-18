@@ -6,6 +6,8 @@ data/
 
 # 依赖与日志
 node_modules/
+dist-cloud/
+.wrangler/
 *.log
 .DS_Store
 Thumbs.db
