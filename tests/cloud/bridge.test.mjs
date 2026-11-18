@@ -70,7 +70,7 @@ test("GM 控制歌单通过 OBR Metadata 传播，玩家无权修改，无播放
 
     await assert.rejects(
       () => player.apiPost("/api/rooms/room-test-123/command", { type: "pause" }),
-      /只有 Owlbear 房主/
+      /Owlbear 房主权限/
     );
     assert.equal(gm.state.playback.playing, true);
     // 没有产生 GET /now、SSE、心跳等 Node HTTP 请求。
