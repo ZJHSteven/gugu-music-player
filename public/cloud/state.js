@@ -71,7 +71,9 @@ export function publicNow(state) {
       hash: item.hash,
       src: `cloud:${item.hash}`,
     } : null,
-    owner: null,
+    // Owlbear 的房主角色决定控制权。保留非空 owner 兼容原版玩家视图，
+    // 防止玩家看到“我是主持，取得播放控制权”这种错误入口。
+    owner: { name: "Owlbear 房主", since: 0 },
   };
 }
 
@@ -84,7 +86,7 @@ export function publicState(s) {
     playlist: s.playlist.map((t) => ({
       ...t, src: `cloud:${t.hash}`,
     })),
-    owner: null,
+    owner: { name: "Owlbear 房主", since: 0 },
   };
 }
 

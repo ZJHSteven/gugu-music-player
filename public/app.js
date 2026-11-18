@@ -240,7 +240,7 @@ function listView(list) {
 
   const bar = folderBar();
   if (!list.length) {
-    return `${bar}<div class="empty">${icon("music")}<div>还没有曲目</div><div>切到「添加」，放本地文件或粘贴 B 站链接</div></div>`;
+    return `${bar}<div class="empty">${icon("music")}<div>还没有曲目</div><div>${window.BARD_CLOUD ? "切到「添加」，从本地选择音频并共享给房间" : "切到「添加」，放本地文件或粘贴 B 站链接"}</div></div>`;
   }
   if (!shown.length) {
     return `${bar}<div class="empty">${icon("music")}<div>这个分类还是空的</div><div>切到「添加」上传，曲目会进到当前分类</div></div>`;
@@ -295,7 +295,7 @@ function addView() {
       up.done ? `已完成 ${up.done} 个` : `${esc(up.name)} · ${Math.round(up.pct * 100)}%`
     }</span></div>` : ""}
   </div>
-  <div class="field">
+  ${window.BARD_CLOUD ? '<div class="foot" style="text-align:left">云版歌曲保存在所有成员的浏览器本地，缺少的音频会通过房间中继自动共享。请保留额外备份。</div>' : `<div class="field">
     <div class="label">B 站视频 <span class="hint">只取音轨</span></div>
     <div class="row2">
       <input class="input" id="bili" placeholder="粘贴视频链接 / BV 号" value="${esc(S.biliUrl)}" />
@@ -304,7 +304,7 @@ function addView() {
   }</button>
     </div>
     <div class="foot" style="text-align:left;padding-top:6px">支持 bilibili.com/video/BV…、b23.tv 短链、av 号</div>
-  </div>`;
+  </div>`}`;
 }
 
 function settingsView() {
@@ -338,11 +338,11 @@ function settingsView() {
   <div class="kv"><span>房间号</span><span>${esc(S.roomId.slice(0, 12))}…</span></div>
   <div class="kv"><span>控制权</span><span>${S.status.hasToken ? "已取得" : "未取得"}</span></div>
   <div class="kv"><span>曲目数</span><span>${S.state?.playlist?.length ?? 0}</span></div>
-  <div class="row2" style="margin-top:14px">
+  ${window.BARD_CLOUD ? '<div class="foot">云端版：播放控制权由 Owlbear 房主角色决定；房间同步不发送服务器心跳。</div>' : `<div class="row2" style="margin-top:14px">
     <button class="btn block" data-act="reclaim">重新取得控制权</button>
     <button class="btn block" data-act="release">让出控制权</button>
   </div>
-  <div class="foot">控制权靠心跳保持，关掉浏览器 90 秒后别人可接管。</div>`;
+  <div class="foot">控制权靠心跳保持，关掉浏览器 90 秒后别人可接管。</div>`}`;
 }
 
 function playerView() {

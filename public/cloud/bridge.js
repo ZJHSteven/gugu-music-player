@@ -32,6 +32,11 @@ export class CloudBridge {
     this.listeners = new Set();
     this.fileListeners = new Set();
     this.writeChain = Promise.resolve();
+    // GM 与玩家设备本地系统时钟可能不同，不能直接拿绝对 Date.now() 作跨端播放位置。
+    // 通过 Owlbear Broadcast 单次 NTP 类时钟往返校准，完全不经过 Cloudflare DO。
+    this.skew = 0;
+    this.bestRoundTrip = Infinity;
+    this.clockRequests = new Map();
     this.initialized = false;
   }
 
@@ -46,8 +51,30 @@ export class CloudBridge {
       this.receiveState(normalizeState(metadata?.[METADATA_KEY]));
     });
     this.OBR.broadcast.onMessage(BROADCAST_CHANNEL, (event) => {
-      if (event.data?.t === "changed" && event.data.rev > (this.state?.rev || 0)) {
+      const data = event.data;
+      if (data?.t === "changed" && data.rev > (this.state?.rev || 0)) {
         this.refresh().catch(console.warn);
+      }
+      if (data?.t === "clock-ping") {
+        // 只有 GM 设备响应，避免多个玩家时钟互相污染。
+        this.isGM().then((gm) => {
+          if (gm && data.id && Number.isFinite(data.t0)) {
+            return this.OBR.broadcast.sendMessage(BROADCAST_CHANNEL, {
+              t: "clock-pong", id: data.id, t0: data.t0, gmTime: Date.now(),
+            });
+          }
+        }).catch(console.warn);
+      }
+      if (data?.t === "clock-pong" && this.clockRequests.has(data.id)) {
+        const t2 = Date.now();
+        const t0 = this.clockRequests.get(data.id);
+        this.clockRequests.delete(data.id);
+        const roundTrip = t2 - t0;
+        if (roundTrip >= 0 && roundTrip < this.bestRoundTrip && roundTrip < 15000) {
+          this.bestRoundTrip = roundTrip;
+          this.skew = data.gmTime - (t0 + t2) / 2;
+          this.emit();
+        }
       }
     });
     await this.refresh();
@@ -57,7 +84,16 @@ export class CloudBridge {
       if (latest) this.receiveState(latest);
       else await this.commit(createState(randomSecret()));
     }
+    if (!await this.isGM()) this.calibrateClock().catch(console.warn);
     return this;
+  }
+
+  async calibrateClock() {
+    // 单次握手，不设周期性“心跳”。连接到同一房间的 GM 不在线时使用上次估计。
+    const id = crypto.randomUUID();
+    const t0 = Date.now();
+    this.clockRequests.set(id, t0);
+    await this.OBR.broadcast.sendMessage(BROADCAST_CHANNEL, { t: "clock-ping", id, t0 });
   }
 
   subscribe(listener) {
@@ -106,7 +142,11 @@ export class CloudBridge {
   }
 
   getNow() {
-    return this.state ? publicNow(this.state) : null;
+    if (!this.state) return null;
+    const now = publicNow(this.state);
+    // 把 GM 机器的绝对 anchor 转成本机时间轴。
+    now.playback.anchor -= this.skew;
+    return now;
   }
 
   async commit(next) {
