@@ -24,9 +24,11 @@
 
 ## 验收清单
 
-- [ ] 新云版代码、构建与自动化测试
-- [ ] 30 MiB 文件的完整性、断线重传与两玩家同步
-- [ ] OPFS / IndexedDB 后备与存储清理提示
-- [ ] 纯静态文件 + hibernatable DO 无 HTTP Node API 依赖
-- [ ] Workers 上线和域名验证
+- [x] 新云版代码、构建与自动化测试
+- [x] 本地 30 MiB 文件完整性与 GM 离开后玩家间传输
+- [x] 浏览器跨独立存储环境 3 MiB 中继、OPFS 完整性校验
+- [ ] 公网 30 MiB 文件、复杂断线与多设备重传
+- [ ] IndexedDB 后备、iOS/Safari 存储驱逐与后台声音真机验收
+- [x] 纯静态文件 + hibernatable DO 无 HTTP Node API 依赖
+- [x] Workers 上线和域名验证
 - [ ] Owlbear 实际房间多端播放验证
