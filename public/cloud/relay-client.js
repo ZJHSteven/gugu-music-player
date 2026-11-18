@@ -11,6 +11,9 @@ import { CHUNK_SIZE, MAX_AUDIO_SIZE, HASH_RE, decodeChunk, encodeChunk } from ".
 import { getAudio, putAudio, digest } from "./storage.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// 每八个 256 KiB 分块才要求一次确认：窗口约 2 MiB。
+// 背压比逐块确认省掉 7/8 的小控制包，并避免慢玩家缓存过多待处理帧。
+const ACK_WINDOW = 8;
 
 export class RelayClient {
   constructor(roomId, secret, onFile = () => {}, onError = () => {}) {
@@ -24,6 +27,10 @@ export class RelayClient {
     this.requested = new Set();
     this.incoming = new Map();
     this.transferTimeouts = new Map();
+    this.peer = null;
+    this.lastAck = new Map();
+    this.ackWaiters = new Map();
+    this.serving = new Set();
     this.stopped = false;
     this.reconnectDelay = 500;
   }
@@ -77,6 +84,32 @@ export class RelayClient {
     this.transferTimeouts.delete(hash);
   }
 
+  /**
+   * 等待对应接收方确认某批末尾块。确认可能在等待函数注册前到达，
+   * 所以先在 lastAck 中留下高水位，再查是否需要挂起 Promise。
+   */
+  waitForAck(hash, receiver, index) {
+    const key = `${hash}:${receiver}`;
+    if ((this.lastAck.get(key) ?? -1) >= index) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.ackWaiters.delete(key);
+        reject(new Error("接收者没有确认音频窗口，停止本次传输"));
+      }, 30000);
+      this.ackWaiters.set(key, { index, resolve, reject, timer });
+    });
+  }
+
+  /** 网络断开时取消所有等待，旧 Promise 不得阻塞下一次连接。 */
+  cancelAcks() {
+    for (const pending of this.ackWaiters.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error("传输连接已关闭"));
+    }
+    this.ackWaiters.clear();
+    this.lastAck.clear();
+  }
+
   /** WebSocket 关闭后按需重建，不使用高频保活/心跳。 */
   connect() {
     if (this.stopped || (this.ws && this.ws.readyState <= WebSocket.OPEN)) return;
@@ -100,6 +133,8 @@ export class RelayClient {
       this.ws = null;
       this.requested.clear();
       this.incoming.clear();
+      this.peer = null;
+      this.cancelAcks();
       for (const timeout of this.transferTimeouts.values()) clearTimeout(timeout);
       this.transferTimeouts.clear();
       if (this.stopped) return;
@@ -121,6 +156,21 @@ export class RelayClient {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
     switch (msg.t) {
+      case "welcome":
+        this.peer = msg.peer;
+        break;
+      case "ack": {
+        const key = `${msg.hash}:${msg.from}`;
+        if (!Number.isInteger(msg.index)) break;
+        this.lastAck.set(key, Math.max(this.lastAck.get(key) ?? -1, msg.index));
+        const pending = this.ackWaiters.get(key);
+        if (pending && msg.index >= pending.index) {
+          clearTimeout(pending.timer);
+          this.ackWaiters.delete(key);
+          pending.resolve();
+        }
+        break;
+      }
       case "available":
         for (const hash of msg.hashes || []) {
           if (this.tracks.some((t) => t.hash === hash)) this.request(hash);
@@ -141,7 +191,12 @@ export class RelayClient {
   }
 
   async serve(hash, to) {
-    if (!HASH_RE.test(hash) || !this.owned.has(hash)) return;
+    if (!HASH_RE.test(hash) || !this.owned.has(hash) || !this.peer) return;
+    const serveKey = `${hash}:${to}`;
+    if (this.serving.has(serveKey)) return;
+    this.serving.add(serveKey);
+    this.lastAck.delete(serveKey);
+    try {
     const file = await getAudio(hash);
     if (!file || file.size > MAX_AUDIO_SIZE) return;
     const count = Math.ceil(file.size / CHUNK_SIZE);
@@ -154,9 +209,18 @@ export class RelayClient {
         if (ws.readyState !== WebSocket.OPEN) return;
         await sleep(25);
       }
-      ws.send(encodeChunk({ to, hash, index, total: count }, block));
+      ws.send(encodeChunk({ from: this.peer, to, hash, index, total: count }, block));
+      // 满一组或者最后一块时暂停发送，等待接收者经 DO 回传 ACK。
+      // DO 本身仍然只在收到实际音频/确认包时运行。
+      if ((index + 1) % ACK_WINDOW === 0 || index + 1 === count) {
+        await this.waitForAck(hash, to, index);
+      }
     }
     this.send({ t: "done", hash, to });
+    } finally {
+      this.serving.delete(serveKey);
+      this.lastAck.delete(serveKey);
+    }
   }
 
   async onChunk(raw) {
@@ -175,6 +239,9 @@ export class RelayClient {
     rec.chunks[header.index] = bytes.slice();
     rec.size += bytes.byteLength;
     this.watchTransfer(header.hash);
+    if ((header.index + 1) % ACK_WINDOW === 0 || header.index + 1 === header.total) {
+      this.send({ t: "ack", hash: header.hash, to: header.from, index: header.index });
+    }
     if (rec.size !== t.size || rec.chunks.some((part) => !part)) return;
     rec.complete = true;
     const blob = new Blob(rec.chunks, { type: t.mime || "audio/mpeg" });
@@ -197,6 +264,7 @@ export class RelayClient {
 
   close() {
     this.stopped = true;
+    this.cancelAcks();
     for (const timeout of this.transferTimeouts.values()) clearTimeout(timeout);
     this.transferTimeouts.clear();
     this.ws?.close();
