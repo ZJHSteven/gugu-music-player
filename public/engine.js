@@ -852,14 +852,15 @@ export class Engine {
     if (!msg || this.stopped) return;
     switch (msg.t) {
       case "foreground-playback-on":
-        // 可见的iOS原生媒体控件接受真实手势后播放，后台不要再输出重音。
-        if (window.BARD_CLOUD && this.kind === "background") {
+        // 接受前台同一 iframe 的真实用户手势后才停后台。
+        // 浮窗 fallback Engine 也应让位，避免产生两路同步音乐重音。
+        if (window.BARD_CLOUD) {
           this.suppressedByForeground = true;
           this.audio.pause();
         }
         break;
       case "foreground-playback-off":
-        if (window.BARD_CLOUD && this.kind === "background") {
+        if (window.BARD_CLOUD) {
           this.suppressedByForeground = false;
           if (this.now?.playback?.playing) this.play();
         }

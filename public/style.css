@@ -300,16 +300,26 @@ input[type="range"]::-webkit-slider-thumb { appearance: none; width: 13px; heigh
 }
 
 /* 原生iOS兜底控件放在 #view 外，以免歌单更新时反复销毁 audio。 */
-.ios-audio-dock {
-  margin: 10px 12px 18px;
-  padding: 12px;
+/* iPhone 只有「开启并同步」按钮，真正的 audio 元素不可被触摸快进。 */
+.ios-sync-panel {
+  margin: 10px 12px 14px;
+  padding: 10px;
+  border: 1px solid rgba(232,195,122,.4);
   border-radius: 10px;
-  border: 1px solid rgba(232,195,122,.45);
   background: rgba(232,195,122,.08);
 }
-.ios-audio-dock audio { display: block; margin: 10px 0; }
-.ios-audio-hint, .ios-audio-message {
-  font-size: 12px;
+.ios-sync-panel .btn { min-height: 44px; }
+.ios-sync-status, .ios-sync-hint {
+  margin-top: 7px;
+  font-size: 11px;
   line-height: 1.55;
-  margin-bottom: 7px;
+  overflow-wrap: anywhere;
+}
+.ios-sync-hint { opacity: .75; }
+.ios-sync-hidden-audio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: .01;
+  pointer-events: none;
 }
