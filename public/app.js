@@ -2,6 +2,7 @@
 import { initOBR, createBus, apiGet, apiPost, uploadTrack, mediaDuration, lsGet, lsSet, lsDel, tokenKey, report } from "./lib.js";
 import { Engine } from "./engine.js";
 import { initCloudBridge } from "./cloud/bridge.js";
+import { makeDiagnosticReport } from "./cloud/diagnostics.js";
 
 window.__appBuild = "build-folders-1";
 
@@ -52,6 +53,10 @@ const S = {
   creatingFolder: false,
   sliderActive: false,
   sliderTimer: null,
+  diagnosticsOpen: false,
+  diagnosticsBusy: false,
+  diagnosticsReport: "",
+  diagnosticsSummary: "",
 };
 
 let bus = null;
@@ -101,6 +106,9 @@ function render(force) {
       folderTab: S.folderTab,
       folders: (S.state?.folders || []).join("|"),
       fmap: (S.state?.playlist || []).map((t) => t.folder || "").join("|"),
+      diagnosticsOpen: S.diagnosticsOpen,
+      diagnosticsBusy: S.diagnosticsBusy,
+      diagnosticsReport: S.diagnosticsReport,
     });
     if (!force && sig === lastSig) return updateLive();
     lastSig = sig;
@@ -110,11 +118,122 @@ function render(force) {
     badge.className = `badge ${S.role === "GM" ? "gm" : ""}`;
     document.getElementById("dot").className =
       "dot" + (S.claimError ? " err" : S.status.connected === false ? " warn" : " on");
-    document.getElementById("view").innerHTML = S.role === "GM" ? gmView() : playerView();
+    document.getElementById("view").innerHTML =
+      (S.role === "GM" ? gmView() : playerView()) + diagnosticsView();
     updateLive();
   };
   if (document.hidden) setTimeout(paint, 0);
   else requestAnimationFrame(paint);
+}
+
+/**
+ * 玩家和 GM 都能看见的诊断入口。
+ * 始终按需生成，不在普通播放时轮询 DO，也不自动向服务器上传错误日志。
+ * 移动浏览器剪贴板权限不可用时，用户仍可长按只读文本框手动复制。
+ */
+function diagnosticsView() {
+  if (!window.BARD_CLOUD) return "";
+  const body = !S.diagnosticsOpen ? "" : `
+    <div class="diag-hint">仅含匿名连接编号、下载字节和音频状态；不含账号、房间密钥或歌曲内容。只有你主动发送给别人时才会分享。</div>
+    <button class="btn primary block" data-act="diag-generate" ${S.diagnosticsBusy ? "disabled" : ""}>
+      ${S.diagnosticsBusy ? "正在收集本机与中继状态…" : "生成／刷新诊断"}
+    </button>
+    ${S.diagnosticsSummary ? `<div class="diag-summary">${esc(S.diagnosticsSummary)}</div>` : ""}
+    ${S.diagnosticsReport ? `
+      <button class="btn block" data-act="diag-copy">复制完整诊断报告</button>
+      <textarea class="diag-report" readonly aria-label="诊断报告"
+        spellcheck="false">${esc(S.diagnosticsReport)}</textarea>
+      <div class="diag-hint">若复制按钮不可用，请长按上面的文本框，选择「全选 → 复制」。</div>`
+      : ""}
+  `;
+  return `<section class="diag-section">
+    <button class="btn block diag-toggle" data-act="diag-toggle">
+      ${S.diagnosticsOpen ? "收起" : "打开"} · 音乐播放诊断
+    </button>
+    ${body}
+  </section>`;
+}
+
+async function generateDiagnostics() {
+  if (!window.BARD_CLOUD || S.diagnosticsBusy) return;
+  S.diagnosticsBusy = true;
+  S.diagnosticsOpen = true;
+  render(true);
+  try {
+    // 后台音频引擎与可见面板处于两个独立 iframe。
+    // 从同源消息通道读取真实 audio 元素，不用面板自己的空 audio 推测。
+    const background = await new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        if (S.diagnosticsReply === reply) S.diagnosticsReply = null;
+        resolve(null);
+      }, 1400);
+      const reply = (data) => {
+        clearTimeout(timeout);
+        if (S.diagnosticsReply === reply) S.diagnosticsReply = null;
+        resolve(data);
+      };
+      S.diagnosticsReply = reply;
+      bus?.post({ t: "diagnostics-request" });
+    });
+    const cloud = window.__cloudBridge;
+    let server = null;
+    let diagnosticsError = false;
+    if (cloud?.state?.secret) {
+      try {
+        const uri = `/relay-diagnostics?room=${encodeURIComponent(cloud.roomId)}&key=${cloud.state.secret}`;
+        const response = await fetch(uri, { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        server = await response.json();
+      } catch {
+        diagnosticsError = true;
+      }
+    }
+    const panelRelay = cloud?.relay?.diagnostics() || null;
+    const relay = background?.relay || panelRelay;
+    const media = background?.media;
+    const cached = relay?.ownedCount ?? 0;
+    const missing = relay?.requestedCount ?? 0;
+    const connected = relay?.connected ? "已连接" : "未连接";
+    const audioState = media?.errorCode ? `音频错误代码 ${media.errorCode}` :
+      media?.errorName ? `播放失败：${media.errorName}` :
+        media?.blocked ? "浏览器拦截自动播放" :
+          media?.buffering ? "缓冲中" :
+            media?.paused ? "音频已暂停" : "音频无明确报错";
+    S.diagnosticsSummary =
+      `中继：${connected}；本地缓存：${cached} 首；请求中：${missing} 首；${audioState}。连接编号：${relay?.peer?.slice(0, 12) || "未分配"}`;
+    S.diagnosticsReport = makeDiagnosticReport({
+      userAgent: navigator.userAgent,
+      role: S.role,
+      hasMusicSession: Boolean(cloud?.state),
+      revision: cloud?.state?.rev ?? null,
+      trackLoaded: Boolean(S.now?.track),
+      trackDuration: S.now?.track?.duration ?? null,
+      playingInRoom: Boolean(S.now?.playback?.playing),
+      engine: background,
+      panelRelay,
+      server,
+      diagnosticsError,
+    });
+  } catch {
+    S.diagnosticsSummary = "诊断收集遇到异常，可以重新生成或刷新页面再试。";
+  } finally {
+    S.diagnosticsBusy = false;
+    render(true);
+  }
+}
+
+async function copyDiagnostics() {
+  if (!S.diagnosticsReport) return;
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error("clipboard unavailable");
+    await navigator.clipboard.writeText(S.diagnosticsReport);
+    toast("诊断报告已复制，可以粘贴发送给排障人员。");
+  } catch {
+    const textarea = document.querySelector(".diag-report");
+    textarea?.focus();
+    textarea?.select();
+    toast("浏览器未允许直接复制，请在文本框中长按全选并复制。", "warn", 6500);
+  }
 }
 
 function noticeHtml() {
@@ -582,6 +701,9 @@ document.addEventListener("click", (ev) => {
   const id = el.dataset.id;
 
   if (act === "tab") S.tab = el.dataset.tab;
+  else if (act === "diag-toggle") S.diagnosticsOpen = !S.diagnosticsOpen;
+  else if (act === "diag-generate") { generateDiagnostics(); return; }
+  else if (act === "diag-copy") { copyDiagnostics(); return; }
   else if (act === "dismiss") S.notice = null;
   else if (act === "toggle") command({ type: S.now?.playback?.playing ? "pause" : "play" });
   else if (act === "prev") command({ type: "prev" });
@@ -863,6 +985,9 @@ async function boot() {
 
 function onBus(msg) {
   switch (msg.t) {
+    case "diagnostics-response":
+      S.diagnosticsReply?.(msg.snapshot);
+      break;
     case "hello":
       if (msg.kind === "background") heardBg = true;
       break;
