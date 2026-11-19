@@ -13,6 +13,7 @@
     "build:cloud": "node tools/build-cloud.mjs",
     "test:cloud": "node --test tests/cloud/*.test.mjs",
     "verify:cloud": "node tools/check-cloud-extension.mjs",
+    "verify:cloud:online": "node tools/check-cloud-extension.mjs --online",
     "deploy:cloud": "npm run build:cloud && wrangler deploy",
     "vendor": "node tools/vendor-sdk.mjs",
     "selftest": "node tools/selftest.mjs",

@@ -1,91 +1,82 @@
 /**
- * 真实 Owlbear 安装入口的线上预检（不需要账号、不会修改房间）。
+ * 云端版 Owlbear 插件安装预检。
  *
- * 2026-11-19 实测发现两个只在真 Owlbear 安装时才暴露的问题：
- * 1. Cloudflare Worker Static Assets 默认缺少 CORS，导致 Owlbear 页面
- *    跨域 fetch(manifest.json) 失败，即使直接浏览该 URL 返回 HTTP 200；
- * 2. Owlbear 曾将 ./icon.png 等相对地址解析为带尾点的域名，图片失败。
+ * 默认对 dist-cloud/ 构建产物进行完全离线、可重复的结构检查。
+ * 这适合本机无法直接经 Node.js 访问公网（例如 Windows 系统代理）的场景。
  *
- * 每次部署后运行本脚本，以真实的 Owlbear Origin 模拟安装时的网络条件，
- * 检验静态文件的跨域访问头、清单字段、URL 及网页入口。
+ * 通过 `node tools/check-cloud-extension.mjs --online` 额外验证远端站点：
+ * 从 Owlbear 来源模拟 fetch，严格检查 HTTP 状态和 CORS 响应头。
+ * 注意：Node.js fetch 不执行浏览器 CORS 判定，需要手动读取响应头。
  *
- * 注意：Node.js 的 fetch 本身不会替浏览器执行 CORS 判定，因此这里明确
- * 检查 Access-Control-Allow-Origin，而不是仅凭状态码 200 宣称安装成功。
+ * 真实浏览器端的跨源 fetch 验证已经使用 Owlbear 已登录 CDP Chrome 进行，
+ * 在此处不把“静态配置正确”伪称为“线上网络一定可达”。
  */
-import { execFileSync } from "node:child_process";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const base = new URL(process.env.GUGU_CLOUD_ORIGIN || "https://music.zjhstudio.com");
+const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const dir = path.join(repo, "dist-cloud");
+const origin = new URL(process.env.GUGU_CLOUD_ORIGIN || "https://music.zjhstudio.com");
 const owlOrigin = "https://www.owlbear.rodeo";
-if (base.protocol !== "https:") throw new Error("云端正式入口必须是 HTTPS");
 
-/**
- * Windows 本机启用了系统代理时，Node 24 的全局 fetch 不一定读取 WinINET
- * 代理配置，表现为 ConnectTimeoutError；但 PowerShell 7 的 Invoke-WebRequest
- * 可以沿用系统网络配置。预检工具在 Windows 上走这个只读系统请求通道，
- * Linux/macOS 则继续使用标准 fetch。没有任何文件上传或敏感数据发送。
- */
-function fetchWithWindowsNetwork(url) {
-  const script = [
-    "$ProgressPreference='SilentlyContinue'",
-    "$r=Invoke-WebRequest -Uri $env:GUGU_VERIFY_URL -Headers @{Origin='https://www.owlbear.rodeo'} -UseBasicParsing -TimeoutSec 15",
-    "$content=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$r.Content))",
-    "[pscustomobject]@{status=[int]$r.StatusCode;allow=[string]$r.Headers['Access-Control-Allow-Origin'];body=$content} | ConvertTo-Json -Compress",
-  ].join("; ");
-  const output = execFileSync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", script], {
-    env: { ...process.env, GUGU_VERIFY_URL: String(url) },
-    encoding: "utf8",
-    timeout: 20000,
-  }).trim();
-  const data = JSON.parse(output);
-  return new Response(Buffer.from(data.body, "base64"), {
-    status: data.status,
-    headers: { "Access-Control-Allow-Origin": data.allow },
-  });
-}
+const read = (file) => fs.readFile(path.join(dir, file));
+if (origin.protocol !== "https:") throw new Error("正式安装入口必须使用 HTTPS");
 
-async function verifyFetch(label, url) {
-  const response = process.platform === "win32" && process.env.GUGU_USE_NODE_FETCH !== "1"
-    ? fetchWithWindowsNetwork(url)
-    : await fetch(url, {
-      headers: { Origin: owlOrigin },
-      cache: "no-store",
-      signal: AbortSignal.timeout(15000),
-    });
-  if (!response.ok) throw new Error(`${label} HTTP ${response.status}: ${url}`);
-  const allow = response.headers.get("access-control-allow-origin");
-  if (allow !== "*" && allow !== owlOrigin) {
-    throw new Error(`${label} 缺失允许 Owlbear 来源的 CORS 响应头: ${allow || "未设置"}`);
-  }
-  return response;
-}
-
-const manifestUrl = new URL("/manifest.json", base);
-const manifest = await (await verifyFetch("插件清单", manifestUrl)).json();
+const manifest = JSON.parse((await read("manifest.json")).toString("utf8"));
 if (manifest.manifest_version !== 1 || !manifest.name ||
     !/^\d+\.\d+\.\d+$/.test(manifest.version || "")) {
-  throw new Error("清单格式或版本号无效");
+  throw new Error("manifest.json 的基础字段格式无效");
 }
-console.log(`插件清单：${manifest.name} v${manifest.version}`);
+console.log(`插件：${manifest.name} v${manifest.version}`);
 
-const destinations = [
+const headers = (await read("_headers")).toString("utf8");
+if (!/^\/\*\s*\n\s*Access-Control-Allow-Origin:\s*(?:\*|https:\/\/www\.owlbear\.rodeo)/mi.test(headers)) {
+  throw new Error("_headers 未提供 Owlbear 可以使用的静态资源 CORS 规则");
+}
+console.log("✓ 静态资源 CORS 配置存在");
+
+const urls = [
   ["扩展图标", manifest.icon],
-  ["后台引擎", manifest.background_url],
+  ["后台音乐引擎", manifest.background_url],
   ["操作按钮图标", manifest.action?.icon],
-  ["浮窗主页", manifest.action?.popover],
+  ["点歌面板", manifest.action?.popover],
 ];
-for (const [label, value] of destinations) {
+const targets = [new URL("/manifest.json", origin)];
+for (const [name, raw] of urls) {
   let url;
-  try { url = new URL(value); }
-  catch { throw new Error(`${label} 必须使用完整绝对 HTTPS URL: ${value}`); }
-  if (url.origin !== base.origin || url.hostname.endsWith(".")) {
-    throw new Error(`${label} 主机名错误或多余尾点: ${url}`);
+  try { url = new URL(raw); }
+  catch { throw new Error(`${name} 必须使用完整的绝对 HTTPS URL：${raw}`); }
+  if (!/^https:\/\//.test(String(raw)) || url.origin !== origin.origin ||
+      url.hostname.endsWith(".")) {
+    throw new Error(`${name} 存在相对路径、错误域名或结尾点：${raw}`);
   }
-  await verifyFetch(label, url);
-  console.log(`✓ ${label}：${url.pathname} HTTP 200 / CORS 正常`);
+  const file = url.pathname === "/" ? "index.html" : decodeURIComponent(url.pathname.slice(1));
+  if (file.includes("..") || path.isAbsolute(file)) throw new Error(`${name} 资源路径不安全`);
+  const bytes = await read(file);
+  if (!bytes.length) throw new Error(`${name} 资源为空：${file}`);
+  console.log(`✓ ${name}：${url.pathname}（${bytes.length} B）`);
+  targets.push(url);
 }
 
-const config = await (await verifyFetch("云端配置", new URL("/config.js", base))).text();
-if (!/BARD_CLOUD\s*=\s*true/.test(config)) {
-  throw new Error("站点未启用云版 BARD_CLOUD 配置");
+const config = (await read("config.js")).toString("utf8");
+if (!/BARD_CLOUD\s*=\s*true/.test(config)) throw new Error("未启用云版 BARD_CLOUD");
+targets.push(new URL("/config.js", origin));
+console.log("✓ 离线部署构建预检通过");
+
+if (process.argv.includes("--online")) {
+  console.log("开始在线验收：使用 Owlbear Origin 检查真实的 HTTP / CORS 响应");
+  for (const url of targets) {
+    const res = await fetch(url, {
+      headers: { Origin: owlOrigin },
+      cache: "no-store",
+      signal: AbortSignal.timeout(20000),
+    });
+    const cors = res.headers.get("access-control-allow-origin");
+    if (!res.ok || (cors !== "*" && cors !== owlOrigin)) {
+      throw new Error(`${url.pathname} 响应不符合 Owlbear 安装要求：HTTP ${res.status}, CORS ${cors}`);
+    }
+    console.log(`✓ ${url.pathname}：HTTP ${res.status}，CORS ${cors}`);
+  }
+  console.log("✓ 公网在线预检通过");
 }
-console.log("✓ Owlbear 跨域安装预检全部通过");

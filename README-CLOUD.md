@@ -36,6 +36,12 @@ npm run verify:cloud
 npx wrangler dev --local --port 8790
 ```
 
+其中 `verify:cloud` 是无需联网的静态构建检查；`verify:cloud:online`
+会真正请求正式域名并验证 CORS。某些 Windows 本机网络环境的 Node.js
+不使用系统代理，此时在线子命令可能因连接超时失败；应使用 CDP
+浏览器跨源 fetch 或系统 PowerShell 请求独立复核，而不是把超时误认为
+清单格式错误。
+
 启动另一个终端进行真实本地 DO 中继测试：
 
 ```pwsh
