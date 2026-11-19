@@ -12,16 +12,45 @@
  * 注意：Node.js 的 fetch 本身不会替浏览器执行 CORS 判定，因此这里明确
  * 检查 Access-Control-Allow-Origin，而不是仅凭状态码 200 宣称安装成功。
  */
+import { execFileSync } from "node:child_process";
+
 const base = new URL(process.env.GUGU_CLOUD_ORIGIN || "https://music.zjhstudio.com");
 const owlOrigin = "https://www.owlbear.rodeo";
 if (base.protocol !== "https:") throw new Error("云端正式入口必须是 HTTPS");
 
-async function verifyFetch(label, url) {
-  const response = await fetch(url, {
-    headers: { Origin: owlOrigin },
-    cache: "no-store",
-    signal: AbortSignal.timeout(15000),
+/**
+ * Windows 本机启用了系统代理时，Node 24 的全局 fetch 不一定读取 WinINET
+ * 代理配置，表现为 ConnectTimeoutError；但 PowerShell 7 的 Invoke-WebRequest
+ * 可以沿用系统网络配置。预检工具在 Windows 上走这个只读系统请求通道，
+ * Linux/macOS 则继续使用标准 fetch。没有任何文件上传或敏感数据发送。
+ */
+function fetchWithWindowsNetwork(url) {
+  const script = [
+    "$ProgressPreference='SilentlyContinue'",
+    "$r=Invoke-WebRequest -Uri $env:GUGU_VERIFY_URL -Headers @{Origin='https://www.owlbear.rodeo'} -UseBasicParsing -TimeoutSec 15",
+    "$content=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$r.Content))",
+    "[pscustomobject]@{status=[int]$r.StatusCode;allow=[string]$r.Headers['Access-Control-Allow-Origin'];body=$content} | ConvertTo-Json -Compress",
+  ].join("; ");
+  const output = execFileSync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", script], {
+    env: { ...process.env, GUGU_VERIFY_URL: String(url) },
+    encoding: "utf8",
+    timeout: 20000,
+  }).trim();
+  const data = JSON.parse(output);
+  return new Response(Buffer.from(data.body, "base64"), {
+    status: data.status,
+    headers: { "Access-Control-Allow-Origin": data.allow },
   });
+}
+
+async function verifyFetch(label, url) {
+  const response = process.platform === "win32" && process.env.GUGU_USE_NODE_FETCH !== "1"
+    ? fetchWithWindowsNetwork(url)
+    : await fetch(url, {
+      headers: { Origin: owlOrigin },
+      cache: "no-store",
+      signal: AbortSignal.timeout(15000),
+    });
   if (!response.ok) throw new Error(`${label} HTTP ${response.status}: ${url}`);
   const allow = response.headers.get("access-control-allow-origin");
   if (allow !== "*" && allow !== owlOrigin) {
