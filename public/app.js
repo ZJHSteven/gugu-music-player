@@ -766,14 +766,13 @@ document.addEventListener("click", (ev) => {
   } else if (act === "pick-file") document.getElementById("file")?.click();
   else if (act === "add-bili") addBilibili();
   else if (act === "toggle-hide") command({ type: "settings", hideTitle: !S.state?.settings?.hideTitle });
-  else if (act === "unlock") {
-    bus?.post({ t: "unlock" });
-    // iOS 的 BroadcastChannel 不会传递点击手势权限；展示原生音频控件，
-    // 需要用户再在控件上点击一次播放才能获得真正的 Safari 激活。
-    if (window.BARD_CLOUD && iosAudio) showIosAudioPlayer();
+  else if (act === "unlock" || act === "ios-enable") {
+    // 这里保持纯同步调用：Safari 必须看到在用户点击的同一执行栈
+    // 中调用真正音频元素的 play()。不通过 BroadcastChannel 转发。
+    if (window.BARD_CLOUD && iosAudio) iosFollower?.enableFromUserGesture();
+    else bus?.post({ t: "unlock" });
+    return;
   }
-  else if (act === "ios-native") { showIosAudioPlayer(); return; }
-  else if (act === "ios-close") { closeIosDock(); return; }
   else if (act === "reclaim") claim();
   else if (act === "release") {
     askConfirm("让出控制权？其他 GM 可以接管。", null, "release");
@@ -1011,13 +1010,17 @@ async function boot() {
   const { OBR, role, roomId, attempts, ready } = await initOBR();
   S.role = role;
   S.roomId = roomId;
+  initIosFollower();
   if (window.BARD_CLOUD && roomId) {
     const cloud = await initCloudBridge(OBR, role, roomId);
     cloud.subscribe((state, now) => {
       S.state = state;
       S.now = now;
+      iosFollower?.prepare(now);
       render(true);
     });
+    // 状态可能先于文件到达；收到 OPFS 校验成功事件后再准备可播放源。
+    cloud.onFile(() => iosFollower?.prepare(S.now));
   }
   const tab = new URLSearchParams(location.search).get("tab");
   if (["list", "add", "settings"].includes(tab)) S.tab = tab;
@@ -1054,9 +1057,9 @@ function onBus(msg) {
       if (msg.kind === "popover") engine = null;
       break;
     case "now":
-      if (iosDock && msg.now?.track?.hash !== iosDock.hash) closeIosDock();
       S.now = msg.now;
       if (msg.now?.serverTime) S.skew = msg.now.serverTime - Date.now();
+      iosFollower?.prepare(msg.now);
       render();
       break;
     case "state":
