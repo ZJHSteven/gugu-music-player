@@ -560,9 +560,13 @@ function settingsView() {
 function playerView() {
   const hasTrack = Boolean(S.now?.track);
   const vol = Math.round((S.status.volume ?? 0.85) * 100);
+  const iosButton = window.BARD_CLOUD && iosAudio && hasTrack
+    ? '<button class="btn block" data-act="ios-native" style="margin-bottom:12px">iPhone 无声？使用原生播放器</button>'
+    : "";
   // 房间还没人控制：给主持一个入口（OBR 偶尔会把 GM 报成 PLAYER）
   const canClaim = !S.now?.owner;
   return `
+  ${iosButton}
   ${nowCard(false)}
   ${S.status.blocked ? `<button class="unlock" data-act="unlock">${icon("volume")}开启声音</button>` : ""}
   ${
@@ -798,7 +802,14 @@ document.addEventListener("click", (ev) => {
   } else if (act === "pick-file") document.getElementById("file")?.click();
   else if (act === "add-bili") addBilibili();
   else if (act === "toggle-hide") command({ type: "settings", hideTitle: !S.state?.settings?.hideTitle });
-  else if (act === "unlock") bus?.post({ t: "unlock" });
+  else if (act === "unlock") {
+    bus?.post({ t: "unlock" });
+    // iOS 的 BroadcastChannel 不会传递点击手势权限；展示原生音频控件，
+    // 需要用户再在控件上点击一次播放才能获得真正的 Safari 激活。
+    if (window.BARD_CLOUD && iosAudio) showIosAudioPlayer();
+  }
+  else if (act === "ios-native") { showIosAudioPlayer(); return; }
+  else if (act === "ios-close") { closeIosDock(); return; }
   else if (act === "reclaim") claim();
   else if (act === "release") {
     askConfirm("让出控制权？其他 GM 可以接管。", null, "release");
@@ -1079,6 +1090,7 @@ function onBus(msg) {
       if (msg.kind === "popover") engine = null;
       break;
     case "now":
+      if (iosDock && msg.now?.track?.hash !== iosDock.hash) closeIosDock();
       S.now = msg.now;
       if (msg.now?.serverTime) S.skew = msg.now.serverTime - Date.now();
       render();
