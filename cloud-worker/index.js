@@ -18,6 +18,8 @@ const roomPattern = /^[a-zA-Z0-9_-]{1,100}$/;
 const keyPattern = /^[a-f0-9]{32}$/;
 const MAX_CONNECTIONS = 48;
 const MAX_HASHES = 160;
+const MAX_SNAPSHOT_BYTES = 60 * 1024;
+const MAX_ROOM_SNAPSHOTS = 80;
 
 /** 通过消息内容匹配合法类型，避免恶意对象塞入过多任意字段。 */
 function validHashes(list) {
@@ -25,8 +27,15 @@ function validHashes(list) {
 }
 
 export class RoomRelay extends DurableObject {
-  /** 这是唯一的 DO HTTP 调用：WebSocket upgrade。 */
+  /**
+   * 音频仍然只通过 WebSocket 转发，不进持久存储。
+   * 唯一额外的持久数据是按 SHA256 寻址的小型房间状态 JSON；
+   * 这是为了避免 Owlbear 全房间 16KB 元数据被其他扩展占满。
+   */
   async fetch(request) {
+    if (new URL(request.url).pathname === "/room-state") {
+      return this.roomSnapshot(request);
+    }
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response("WebSocket required", { status: 426 });
     }
@@ -39,6 +48,49 @@ export class RoomRelay extends DurableObject {
     server.serializeAttachment({ peer: crypto.randomUUID(), hashes: [] });
     server.send(JSON.stringify({ t: "welcome", peer: server.deserializeAttachment().peer }));
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /** 不可变内容存储。写入不能直接影响房间：只能由宿主 GM 修改指针。 */
+  async roomSnapshot(request) {
+    const url = new URL(request.url);
+    const hash = url.searchParams.get("hash") || "";
+    if (!HASH_RE.test(hash)) return new Response("Invalid hash", { status: 400 });
+    const key = `snapshot:${hash}`;
+    if (request.method === "GET") {
+      const value = await this.ctx.storage.get(key);
+      return value
+        ? new Response(value.data, {
+          headers: { "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": "no-store" },
+        })
+        : new Response("Missing room snapshot", { status: 404 });
+    }
+    if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+    const length = Number(request.headers.get("Content-Length"));
+    if (Number.isFinite(length) && length > MAX_SNAPSHOT_BYTES) {
+      return new Response("Snapshot too large", { status: 413 });
+    }
+    const data = await request.text();
+    const bytes = new TextEncoder().encode(data);
+    if (!bytes.length || bytes.length > MAX_SNAPSHOT_BYTES) {
+      return new Response("Snapshot too large", { status: 413 });
+    }
+    const computed = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
+      .map((x) => x.toString(16).padStart(2, "0")).join("");
+    if (computed !== hash) return new Response("Hash mismatch", { status: 422 });
+    // 已有相同 SHA256 的内容不重复写入，减少改音量等频繁提交的 DO 写操作。
+    if (!(await this.ctx.storage.get(key))) {
+      await this.ctx.storage.put(key, { data, time: Date.now() });
+      // 只保留最近 80 个状态版本，防止房间长期开歌积累无限 DO 持久费用。
+      // Owlbear 指针通常只引用最新版本，旧版本按创建时间清理。
+      const entries = [...(await this.ctx.storage.list({ prefix: "snapshot:" })).entries()];
+      if (entries.length > MAX_ROOM_SNAPSHOTS) {
+        entries.sort((a, b) => a[1].time - b[1].time);
+        await this.ctx.storage.delete(entries.slice(0, entries.length - MAX_ROOM_SNAPSHOTS)
+          .map(([oldKey]) => oldKey));
+      }
+    }
+    return new Response(null, { status: 204 });
   }
 
   /** 动态读取附件而不是在构造函数中缓存在线成员，保证休眠唤醒后仍然正确。 */
@@ -132,13 +184,16 @@ export class RoomRelay extends DurableObject {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname !== "/relay") return env.ASSETS.fetch(request);
+    if (url.pathname !== "/relay" && url.pathname !== "/room-state") {
+      return env.ASSETS.fetch(request);
+    }
 
     // 防止其他站点的普通网页借助用户浏览器滥用中继。
     // 此 Origin 校验不是用户认证；非浏览器客户端可能伪造 Origin。
     const origin = request.headers.get("Origin");
     if (origin && origin !== url.origin) return new Response("Origin denied", { status: 403 });
-    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+    if (url.pathname === "/relay" &&
+        request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response("WebSocket required", { status: 426 });
     }
     const room = url.searchParams.get("room") || "";
