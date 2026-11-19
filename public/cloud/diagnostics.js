@@ -119,9 +119,11 @@ function serverStatus(server) {
 }
 
 function environment(ua = "") {
+  // iPhone Chrome 的 UA 使用 CriOS 而非 Chrome；同理 FxiOS / EdgiOS。
+  // 即使底层仍为 WebKit，也应报告用户真正打开的浏览器应用。
   const name = /QQ\//.test(ua) || /MQQBrowser/.test(ua) ? "QQ 内置浏览器" :
-    /Firefox\//.test(ua) ? "Firefox" :
-    /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" :
+    /Firefox\/|FxiOS\//.test(ua) ? "Firefox" :
+    /Edg\/|EdgiOS\//.test(ua) ? "Edge" : /Chrome\/|CriOS\//.test(ua) ? "Chrome" :
       /Safari\//.test(ua) ? "Safari" : "其他浏览器";
   const os = /Android/i.test(ua) ? "Android" : /iPhone|iPad|iPod/i.test(ua) ?
     "iOS/iPadOS" : /Windows/i.test(ua) ? "Windows" :
