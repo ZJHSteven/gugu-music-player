@@ -381,8 +381,19 @@ function settingsView() {
 function playerView() {
   const hasTrack = Boolean(S.now?.track);
   const vol = Math.round((S.status.volume ?? 0.85) * 100);
+  // 真实 Owlbear PLAYER 房间实测：其他音乐扩展正在播放时，它们会写自己的
+  // Metadata，但可能完全没有咕咕的状态。不能误导玩家为「GM 尚未播放」，
+  // 也不能展示实际上永远无法成功的「我是主持」按钮。
+  // 咕咕云版必须由本房间 GM 启动，才会创建自己的歌单与播放时间轴。
+  if (window.BARD_CLOUD && !S.now) return `
+    <div class="empty">本房间尚未启用咕咕点歌台的播放会话</div>
+    <div class="player-note">请房主在本房间打开「咕咕点歌台 · 云端版」，通过本插件上传歌曲并点击播放。其他音乐扩展的歌单不会自动同步到咕咕。</div>
+    <div class="field">
+      <div class="label">我的音量 <span class="hint">${vol}%</span></div>
+      <div class="vol"><input type="range" min="0" max="100" value="${vol}" data-act="vol" /></div>
+    </div>`;
   // 房间还没人控制：给主持一个入口（OBR 偶尔会把 GM 报成 PLAYER）
-  const canClaim = !S.now?.owner;
+  const canClaim = !window.BARD_CLOUD && !S.now?.owner;
   return `
   ${nowCard(false)}
   ${S.status.blocked ? `<button class="unlock" data-act="unlock">${icon("volume")}开启声音</button>` : ""}

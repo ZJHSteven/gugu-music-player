@@ -1,5 +1,7 @@
 # 云端版当前状态（2026-11-19）
 
+**2026-11-19 16:55 外部房间排障：** 日常 Chrome 作为 PLAYER 进入别人的 Owlbear 房间 `The Muggy Proof`，云版面板和后台均已加载、SDK 返回 PLAYER，但是 `com.zjhstudio.gugu-cloud/state` 元数据字段**不存在**，因此 `CloudBridge.state=null`、没有播放列表、没有建立音频 DO 连接；这是「这间房的 GM 没有创建咕咕云版播放会话」，不是文件收不到或音频未解码。该房间已有其他独立音乐扩展的播放字段 `keegan.dev.djinni/currently`、`com.obr-suite/music-board:session`；至少存在 Djinni 和 Music Board 的播放状态，不能把它们的音频误认为咕咕。已修正 PLAYER 无咕咕状态时的 UI 提示，不再错误显示「GM 还没开始播放」/「我是主持」；当前**只完成本地代码修复，不重新发布**，以免在别人测试时切换未经 Android 实机验证的 v3.2.2。线上仍 v3.2.1。本轮未更改他人房间的任何状态。
+
 ## 当前结论
 
 - **已上线首版**：Cloudflare Worker `gugu-music-cloud` + 自定义域名 `https://music.zjhstudio.com`，可通过 `/manifest.json` 安装 Owlbear 插件。
