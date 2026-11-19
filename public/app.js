@@ -69,6 +69,7 @@ let queued = false;
 // 只在 iPhone/iPad 的云端 iframe 创建受 GM 控制的音频输出；
 // 其他平台继续使用已验收的后台 Engine，避免扩大修复影响面。
 const iosAudio = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+document.documentElement.classList.toggle("cloud-mode", Boolean(window.BARD_CLOUD));
 let iosFollower = null;
 let iosFollowerStatus = null;
 
@@ -771,6 +772,10 @@ document.addEventListener("click", (ev) => {
   const id = el.dataset.id;
 
   if (act === "tab") S.tab = el.dataset.tab;
+  else if (act === "diag-jump") {
+    S.diagnosticsOpen = true;
+    S.revealDiagnostics = true;
+  }
   else if (act === "diag-toggle") {
     S.diagnosticsOpen = !S.diagnosticsOpen;
     if (S.diagnosticsOpen) S.revealDiagnostics = true;
