@@ -77,6 +77,10 @@ export class IosSyncAudio {
     this.loading = false;
     this.lastSeek = 0;
     this.largeSince = 0;
+    // 任何 GM 手动暂停/继续/切歌/拖动都会更新房间 playback.seq。
+    // 跟随者必须立即按新计划定位，不能把明确的控制指令误认为普通时钟漂移，
+    // 再等待 6 秒才允许跳到正确进度。
+    this.lastPlaybackSeq = null;
     this.error = "";
     this.timer = null;
 
@@ -162,6 +166,9 @@ export class IosSyncAudio {
 
   applyRoomState(now = this.getNow()) {
     if (!now?.playback) return;
+    const seq = now.playback.seq;
+    const gmChangedPlan = seq !== this.lastPlaybackSeq;
+    this.lastPlaybackSeq = seq;
     this.audio.loop = now.playback.loop === "track";
     this.audio.volume = clamp(Number(this.getVolume() ?? 1) *
       Number(now.playback.volume ?? 1), 0, 1);
@@ -171,7 +178,7 @@ export class IosSyncAudio {
       return;
     }
     if (this.active) {
-      this.align();
+      this.align(gmChangedPlan);
       this.resume();
     }
   }

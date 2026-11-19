@@ -145,3 +145,18 @@ test("中等偏差温和闭环恢复，禁止玩家在本地手动改动GM进度
   assert.equal(expectedRoomPhase(state(), 108_000), 8);
   player.close();
 });
+
+test("GM 显式 seek 修改 seq 后立即按新锚点跳转，不误等待长期漂移冷却", async () => {
+  const { audio, player, setRoom } = make(105_000);
+  await player.prepare();
+  player.enableFromUserGesture();
+  await sleepTick();
+  const moved = state();
+  moved.playback.seq = 22;
+  moved.playback.position = 9.4;
+  moved.playback.anchor = 105_000;
+  setRoom(moved);
+  player.applyRoomState(moved);
+  assert.ok(Math.abs(audio.currentTime - 9.4) < 0.001);
+  player.close();
+});

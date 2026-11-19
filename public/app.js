@@ -80,7 +80,8 @@ function initIosFollower() {
       iosFollowerStatus = status;
       const label = document.querySelector("[data-ios-sync-status]");
       if (label) label.textContent = status.error ||
-        (status.active ? `与 GM 同步中，偏差约 ${status.driftMs} ms` :
+        (!status.playingInRoom ? "GM 当前已暂停，本机跟随暂停" :
+          status.active ? `与 GM 同步中，偏差约 ${status.driftMs} ms` :
           status.loading ? "正在准备同步音频…" :
             status.ready ? "音频已缓存；点下方按钮开启同步声音" :
               "正在等待完整音频缓存");
