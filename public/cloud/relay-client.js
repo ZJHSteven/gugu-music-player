@@ -10,6 +10,7 @@
 import { CHUNK_SIZE, MAX_AUDIO_SIZE, HASH_RE, decodeChunk, encodeChunk } from "./wire.js";
 import { getAudio, putAudio, digest } from "./storage.js";
 import { prioritizeTracks } from "./request-priority.js";
+import { sendAudioWithoutAck } from "./audio-sender.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 每八个 256 KiB 分块才要求一次确认：窗口约 2 MiB。
@@ -290,24 +291,10 @@ export class RelayClient {
     try {
     const file = await getAudio(hash);
     if (!file || file.size > MAX_AUDIO_SIZE) return;
-    const count = Math.ceil(file.size / CHUNK_SIZE);
-    for (let index = 0; index < count; index++) {
-      const ws = this.ws;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      const block = new Uint8Array(await file.slice(index * CHUNK_SIZE, (index + 1) * CHUNK_SIZE).arrayBuffer());
-      // 限制浏览器待发送队列，避免一次把几十兆全部排进内存。
-      while (ws.bufferedAmount > 2 * 1024 * 1024) {
-        if (ws.readyState !== WebSocket.OPEN) return;
-        await sleep(25);
-      }
-      ws.send(encodeChunk({ from: this.peer, to, hash, index, total: count }, block));
-      // 满一组或者最后一块时暂停发送，等待接收者经 DO 回传 ACK。
-      // DO 本身仍然只在收到实际音频/确认包时运行。
-      if ((index + 1) % ACK_WINDOW === 0 || index + 1 === count) {
-        await this.waitForAck(hash, to, index);
-      }
-    }
-    this.send({ t: "done", hash, to });
+    const sent = await sendAudioWithoutAck({
+      ws: this.ws, file, hash, from: this.peer, to,
+    });
+    if (sent) this.send({ t: "done", hash, to });
     } finally {
       this.serving.delete(serveKey);
       this.lastAck.delete(serveKey);
