@@ -13,7 +13,7 @@
  */
 import {
   METADATA_KEY, BROADCAST_CHANNEL, createState, normalizeState,
-  assertMetadataSize, publicNow, publicState, applyCommand, addTrack,
+  assertCloudStateSize, publicNow, publicState, applyCommand, addTrack,
 } from "./state.js";
 import { digest, getAudio, putAudio, requestPersistence } from "./storage.js";
 import { createBackupArchive, readBackupArchive } from "./backup.js";
@@ -274,7 +274,7 @@ export class CloudBridge {
 
   async commit(next) {
     if (!await this.isGM()) throw new Error("只有 Owlbear 房主能修改歌单和播放状态");
-    assertMetadataSize(next);
+    assertCloudStateSize(next);
     const metadata = await this.OBR.room.getMetadata();
     const totalBytes = encodedSize({ ...metadata, [METADATA_KEY]: next });
     // 一旦迁移到 v2 就保持指针格式，不要因其他插件减少数据量来回振荡。
@@ -442,7 +442,7 @@ export class CloudBridge {
         });
         added++;
       }
-      assertMetadataSize(next);
+      assertCloudStateSize(next);
       return next;
     });
     return { restored: unique.length, added };

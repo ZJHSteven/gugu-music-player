@@ -11,6 +11,7 @@ export const METADATA_KEY = "com.zjhstudio.gugu-cloud/state";
 export const BROADCAST_CHANNEL = "com.zjhstudio.gugu-cloud/playback";
 export const MAX_STATE_BYTES = 14 * 1024;
 import { projectPlayback, canPredictPlayback } from "./plan.js";
+import { ROOM_SNAPSHOT_MAX_BYTES } from "./room-snapshots.js";
 
 const clamp = (v, min, max) => Math.min(max, Math.max(min, Number(v) || 0));
 const cleanFolder = (name) => String(name || "").replace(/[\u0000-\u001f]/g, "").trim().slice(0, 24);
@@ -48,6 +49,20 @@ export function assertMetadataSize(state) {
     throw new Error("房间歌单元数据已接近 Owlbear 16 KB 上限；请减少曲目或缩短歌名");
   }
   return length;
+}
+
+/**
+ * 歌单状态始终限制 60KiB，既防止恶意 ZIP/曲名塞爆 DOM，也对齐 DO
+ * 不可变 JSON 快照容量。注意这与 Owlbear 自身 16KiB 配额不同：
+ * 正常房间仍写完整 Metadata；超出安全阈值时由 Bridge 自动保存快照，
+ * 所以 addTrack / applyCommand 不可再无条件套用 14KiB 硬上限。
+ */
+export function assertCloudStateSize(state) {
+  const size = new TextEncoder().encode(JSON.stringify(state)).byteLength;
+  if (size > ROOM_SNAPSHOT_MAX_BYTES) {
+    throw new Error("歌单状态超过 60 KiB 上限，请减少歌曲数量或缩短曲名");
+  }
+  return size;
 }
 
 /** 本地时钟锚点：只需要状态变动事件，不需要逐秒往 DO 发送时间。 */
@@ -223,7 +238,7 @@ export function applyCommand(state, cmd, now = Date.now()) {
     }
     default: throw new Error(`未知指令 ${cmd.type}`);
   }
-  assertMetadataSize(s);
+  assertCloudStateSize(s);
   return s;
 }
 
@@ -243,6 +258,6 @@ export function addTrack(state, track) {
     addedAt: Date.now(),
   });
   next.rev++;
-  assertMetadataSize(next);
+  assertCloudStateSize(next);
   return next;
 }

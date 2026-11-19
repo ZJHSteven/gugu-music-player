@@ -12,10 +12,12 @@
  * - 老房间的 v1 直接存储兼容，不强制迁移或重写其他扩展的元数据。
  */
 export const ROOM_METADATA_LIMIT = 16 * 1024;
-export const ROOM_SNAPSHOT_THRESHOLD = 14 * 1024;
+// 保持尽可能多的正常房间使用原生 Owlbear Metadata。
+// 只在全房间使用量接近 16KiB (剩余不足约1KiB) 时自动转向 DO 快照。
+export const ROOM_SNAPSHOT_THRESHOLD = 15 * 1024;
 const pointerPattern = /^[a-f0-9]{64}$/;
 const secretPattern = /^[a-f0-9]{32}$/;
-const MAX_SNAPSHOT_BYTES = 60 * 1024;
+export const ROOM_SNAPSHOT_MAX_BYTES = 60 * 1024;
 const encoder = new TextEncoder();
 
 export function encodedSize(value) {
@@ -40,7 +42,7 @@ function endpoint(roomId, secret, hash) {
 /** 写入不可变快照；写入完成后才允许更新 Owlbear 指针（失败不会破坏旧指针）。 */
 export async function saveRoomSnapshot(roomId, secret, state) {
   const data = JSON.stringify(state);
-  if (encoder.encode(data).byteLength > MAX_SNAPSHOT_BYTES) {
+  if (encoder.encode(data).byteLength > ROOM_SNAPSHOT_MAX_BYTES) {
     throw new Error("歌单状态过大，请减少歌曲或缩短曲名");
   }
   const hash = await sha256(data);
@@ -58,7 +60,7 @@ export async function loadRoomSnapshot(roomId, pointer) {
     { cache: "no-store" });
   if (!response.ok) throw new Error(`房间歌单快照读取失败（HTTP ${response.status}）`);
   const data = await response.text();
-  if (encoder.encode(data).byteLength > MAX_SNAPSHOT_BYTES ||
+  if (encoder.encode(data).byteLength > ROOM_SNAPSHOT_MAX_BYTES ||
       (await sha256(data)) !== pointer.hash) {
     throw new Error("房间歌单快照与 Owlbear 指针校验不一致");
   }
