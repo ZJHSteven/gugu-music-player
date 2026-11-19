@@ -340,6 +340,9 @@ export class IosSyncAudio {
       try { pending = this.audio.play(); }
       catch (error) {
         this.priming = false;
+        // 同步拒绝时不保留没有用途的静音文件 URL。
+        this.revokeUrl(this.primingUrl);
+        this.primingUrl = null;
         this.error = String(error?.name || "PlayFailed");
         this.notify();
         return false;
@@ -359,11 +362,19 @@ export class IosSyncAudio {
         this.priming = false;
         this.armed = false;
         this.authorized = false;
-        this.error = String(error?.name || "PlayRejected");
+        const rejection = String(error?.name || "PlayRejected");
         if (this.pendingSource) {
           const { hash, source } = this.pendingSource;
           this.installSource(hash, source);
+        } else if (this.primingUrl) {
+          this.audio.pause();
+          this.audio.removeAttribute?.("src");
+          this.audio.load?.();
+          this.revokeUrl(this.primingUrl);
+          this.primingUrl = null;
         }
+        // 换源已完成也不能抹掉Safari真正的授权拒绝。
+        this.error = rejection;
         this.notify();
       });
       this.notify();
