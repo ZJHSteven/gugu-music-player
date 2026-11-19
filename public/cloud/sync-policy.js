@@ -18,6 +18,9 @@ export function initialCloudSeek(target, duration, loop, playing) {
   if (!Number.isFinite(duration) || duration <= 0) return Math.max(0, target);
   // Safari 晚加入时下载可能已经跨越一轮 12 秒短循环。
   // 不应把 currentTime 设为大于时长的值，否则媒体进入 ended/静音状态。
-  if (loop === "track" && playing) return ((target % duration) + duration) % duration;
+  if (loop === "track" && playing) {
+    if (target >= 0 && target < duration) return target;
+    return ((target % duration) + duration) % duration;
+  }
   return Math.max(0, Math.min(target, duration));
 }
