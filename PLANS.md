@@ -27,6 +27,10 @@
 - [x] 新云版代码、构建与自动化测试
 - [x] 本地 30 MiB 文件完整性与 GM 离开后玩家间传输
 - [x] 浏览器跨独立存储环境 3 MiB 中继、OPFS 完整性校验
+- [x] 假 Owlbear SDK 下 GM/PLAYER 房间事件、控制指令、权限和独立浏览器文件同步（2026-11-19）
+- [x] 真实 Owlbear 源跨域读取云版 v3.2.1 manifest（CORS / 绝对 URL 检验）
+- [x] Owlbear 账户安装云版自定义扩展
+- [ ] 在用户现有 The Cured Tying 房间启用扩展（宿主扩展列表 26 张骨架卡，开关 disabled；当前未启用）
 - [ ] 公网 30 MiB 文件、复杂断线与多设备重传
 - [ ] IndexedDB 后备、iOS/Safari 存储驱逐与后台声音真机验收
 - [x] 纯静态文件 + hibernatable DO 无 HTTP Node API 依赖
