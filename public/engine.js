@@ -5,7 +5,9 @@
 import { apiBase, apiGet, apiPost, lsGet, lsSet, lsDel, tokenKey, createBus, tabId, report } from "./lib.js";
 import { initCloudBridge } from "./cloud/bridge.js";
 import { getAudio } from "./cloud/storage.js";
-import { shouldSnapOnCloudUpdate, initialCloudSeek } from "./cloud/sync-policy.js";
+import {
+  shouldSnapOnCloudUpdate, initialCloudSeek, cloudPhaseDifference,
+} from "./cloud/sync-policy.js";
 
 // 同步策略（三层，由轻到重）：
 //   1. 偏差 < DEADBAND      → 不动
@@ -407,7 +409,8 @@ export class Engine {
     // 这些变更或正常的时钟漂移就重置音频位置；只在显式播放时间轴变化
     //（播放/暂停/拖进度/循环换轮）时执行一次校准。
     if (window.BARD_CLOUD &&
-        shouldSnapOnCloudUpdate(previous, now.playback, previousTarget, this.target())) {
+        shouldSnapOnCloudUpdate(previous, now.playback, previousTarget, this.target(),
+          Number(now.track?.duration))) {
       this.snap();
     }
     this.bus.post({ t: "now", now });
@@ -486,7 +489,12 @@ export class Engine {
       this.buffering = false;
       this.emitStatus();
     });
-    this.audio.addEventListener("seeked", () => this.emitStatus());
+    this.audio.addEventListener("seeked", () => {
+      // seeked 已完成定位，即使浏览器没有再派发 playing 事件，
+      // 后续也要恢复小幅纠偏，否则 buffering 标志会永久留在 true。
+      this.buffering = false;
+      this.emitStatus();
+    });
   }
 
   /** 当前缓冲领先播放头多少秒。 */
@@ -574,11 +582,54 @@ export class Engine {
 
   correctDrift() {
     if (window.BARD_CLOUD) {
-      // 网页音频的连续性优先于毫秒级同步。尤其在 iOS Safari 上，
-      // 以 ±6% 变速追钟会导致明显的变调，周期性硬 seek 会中断声音。
-      // 云版只由 onNow() 对真实播放指令做一次跳转，其余时间保持 1.0x。
-      // 同时不再对缓冲中、正在 seek 的媒体施加任何追赶动作。
-      return this.resetRate();
+      // 「同步」与「连续」必须同时成立。禁止每 3 秒硬跳/±6% 猛追，
+      // 但不能因此任由不同设备的音频时钟永久漂移。
+      //
+      // 1. 小于 100ms 忽略，消除浏览器 tick / 浏览器音频设备抖动。
+      // 2. 100ms~2.5s 用 ±1.5% 小幅度纠偏，不暂停音频、不重建缓冲。
+      // 3. 真的长期偏离超过 2.5s 时，持续 6 秒后才允许一次校准 seek，
+      //    两次硬跳至少间隔 20s，而不是 12 秒歌曲里连跳三四次。
+      // 4. 单曲循环计算「圆环最短相位差」，在 12.4→0 秒边界绝不能
+      //    把正常的循环识别成一个 12 秒的错位。
+      const playback = this.now?.playback;
+      if (!playback?.playing || this.audio.readyState < 1 || this.audio.paused ||
+          this.audio.seeking || this.buffering ||
+          Date.now() - (this.lastWaitingAt || 0) < 3000 ||
+          Date.now() < (this.settleUntil || 0)) {
+        return this.resetRate();
+      }
+      const duration = Number(this.now?.track?.duration);
+      const looping = playback.loop === "track";
+      const goal = initialCloudSeek(this.target(), duration, playback.loop, true);
+      const drift = cloudPhaseDifference(this.audio.currentTime, goal, duration, looping);
+      const gap = Math.abs(drift);
+      if (gap < 0.1) {
+        this.largeDriftSince = 0;
+        return this.resetRate();
+      }
+      if (gap >= 2.5) {
+        this.largeDriftSince ||= Date.now();
+        if (Date.now() - this.largeDriftSince >= 6000 &&
+            Date.now() - (this.lastSeekAt || 0) >= 20000) {
+          try {
+            this.audio.currentTime = goal;
+            this.lastSeekAt = Date.now();
+            this.settleUntil = Date.now() + 5000;
+          } catch {}
+          this.largeDriftSince = 0;
+        }
+        return this.resetRate();
+      }
+      this.largeDriftSince = 0;
+      // preservesPitch 用于保证变速时人声的音高尽可能不改变；
+      // 未支持的浏览器会忽略该属性，故将速度变化严格控制在 ±1.5%。
+      if ("preservesPitch" in this.audio) this.audio.preservesPitch = true;
+      const correction = Math.max(-0.015, Math.min(0.015, -drift * 0.045));
+      const nextRate = Number((1 + correction).toFixed(3));
+      if (Math.abs(this.audio.playbackRate - nextRate) >= 0.002) {
+        this.audio.playbackRate = nextRate;
+      }
+      return;
     }
     if (!this.now?.playback?.playing || this.audio.readyState < 1) return this.resetRate();
     // 正在卡顿/刚卡完：这时候 seek 只会丢掉缓冲区，越纠越卡，先什么都别做
@@ -664,6 +715,10 @@ export class Engine {
     if (!window.BARD_CLOUD && Number(this.now?.track?.duration || 0) > 0) return; // 原版 Node 会自动切歌
     if (window.BARD_CLOUD) {
       const playback = this.now?.playback;
+      // 同账号的桌面和手机都可能是 GM：自动切歌只允许最后一次
+      // 发出播放指令的设备（clockId）执行，其余 GM 设备只负责收听。
+      // 老版本房间缺少 clockId 时维持向后兼容。
+      if (playback?.clockId && playback.clockId !== this.cloud?.deviceId) return;
       if (!playback?.playing || !playback?.trackId) return;
       if (this.lastEndedSeq === playback.seq) return;
       this.lastEndedSeq = playback.seq;
@@ -840,7 +895,7 @@ export class Engine {
         if (msg.now) {
           const prevSeq = this.now?.playback?.seq;
           this.onNow(msg.now);
-          if (msg.now?.playback?.seq !== prevSeq) this.snap();
+          if (!window.BARD_CLOUD && msg.now?.playback?.seq !== prevSeq) this.snap();
         }
         break;
       case "refresh":
@@ -867,9 +922,17 @@ export class Engine {
   /** 明确的状态变化（有人 seek/切歌）时立刻对齐，不走容差判断。 */
   snap() {
     if (this.audio.readyState < 1) return;
-    const t = this.target();
+    const p = this.now?.playback;
+    const duration = Number(this.now?.track?.duration);
+    const t = window.BARD_CLOUD
+      ? initialCloudSeek(this.target(), duration, p?.loop, p?.playing)
+      : this.target();
     if (!Number.isFinite(t)) return;
-    if (Math.abs(this.audio.currentTime - t) > 0.2) {
+    const drift = window.BARD_CLOUD
+      ? cloudPhaseDifference(this.audio.currentTime, t, duration,
+        p?.loop === "track" && p?.playing)
+      : this.audio.currentTime - t;
+    if (Math.abs(drift) > 0.2) {
       try {
         this.audio.currentTime = Math.max(0, t);
         this.lastSeekAt = Date.now();

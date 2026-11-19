@@ -6,6 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { CloudBridge } from "../../public/cloud/bridge.js";
+import { applyCommand } from "../../public/cloud/state.js";
 
 class FakeWebSocket {
   static OPEN = 1;
@@ -78,5 +79,69 @@ test("GM 控制歌单通过 OBR Metadata 传播，玩家无权修改，无播放
   } finally {
     gm.relay?.close();
     player.relay?.close();
+  }
+});
+
+test("双 GM 是两台独立设备：播放时钟归属随实际操作的设备切换", async () => {
+  globalThis.location = new URL("https://music.zjhstudio.com/");
+  globalThis.WebSocket = FakeWebSocket;
+  const store = { data: {}, subscribers: [], channels: [] };
+  const owl = {
+    room: {
+      id: "two-real-gm-clients",
+      getMetadata: async () => structuredClone(store.data),
+      setMetadata: async (update) => {
+        Object.assign(store.data, structuredClone(update));
+        for (const listener of store.subscribers) listener(structuredClone(store.data));
+      },
+      onMetadataChange: (listener) => store.subscribers.push(listener),
+    },
+    player: { getRole: async () => "GM" },
+    broadcast: {
+      onMessage: (_channel, listener) => store.channels.push(listener),
+      sendMessage: async (_channel, data) => {
+        for (const listener of store.channels) listener({ data });
+      },
+    },
+  };
+  const desktop = new CloudBridge(owl, owl.room.id);
+  const mobile = new CloudBridge(owl, owl.room.id);
+  desktop.deviceId = "desktop-unique-clock-id";
+  mobile.deviceId = "mobile-unique-clock-id";
+  try {
+    await desktop.start();
+    await mobile.start();
+    await desktop.change((state) => ({
+      ...state, playlist: [{
+        id: "song", hash: "c".repeat(64), size: 120_000,
+        title: "12-second-loop", duration: 12.4,
+      }], rev: state.rev + 1,
+    }));
+    await desktop.apiPost("/api/rooms/room/command", { type: "select", trackId: "song" });
+    assert.equal(desktop.getNow().playback.clockId, desktop.deviceId);
+    assert.equal(mobile.state.playback.clockId, desktop.deviceId);
+
+    // 模拟 Android 的实际系统时钟比桌面快 30 秒。mobile.skew 存的是
+    //「桌面时钟 - Android 时钟」，因此暂停时需先换算旧锚点，再写本地锚点。
+    const realNow = Date.now;
+    mobile.skew = -30_000;
+    let paused;
+    try {
+      Date.now = () => realNow() + 30_000;
+      paused = await mobile.apiPost("/api/rooms/room/command", { type: "pause" });
+    } finally {
+      Date.now = realNow;
+    }
+    assert.equal(paused.now.playback.clockId, mobile.deviceId);
+    assert.equal(desktop.state.playback.clockId, mobile.deviceId);
+    // 原本 30 秒的系统时钟差不应该表现为音频直接前进/倒退 30 秒。
+    assert.ok(Math.abs(desktop.state.playback.position) < 2,
+      "暂停位置不应因另一 GM 的系统时钟偏差而跳跃");
+    assert.equal(desktop.state.playback.playing, false);
+  } finally {
+    desktop.relay?.close();
+    mobile.relay?.close();
+    clearInterval(desktop.clockMaintenance);
+    clearInterval(mobile.clockMaintenance);
   }
 });

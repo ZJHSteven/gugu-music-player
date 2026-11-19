@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { shouldSnapOnCloudUpdate, initialCloudSeek } from "../../public/cloud/sync-policy.js";
+import {
+  shouldSnapOnCloudUpdate, initialCloudSeek, cloudPhaseDifference,
+} from "../../public/cloud/sync-policy.js";
 
 const playback = { trackId: "song", playing: true, seq: 5 };
 test("云端房间设置、广播重复事件不会引起音频位置跳跃", () => {
@@ -21,4 +23,13 @@ test("短单曲循环晚加入不会把 currentTime 设在曲长之外", () => {
   assert.equal(initialCloudSeek(26.3, 12.4, "list", true), 12.4);
   assert.equal(initialCloudSeek(-2, 12.4, "track", false), 0);
   assert.equal(initialCloudSeek(4.2, 12.4, "track", true), 4.2);
+});
+
+test("短单曲循环的跨边界相位差不会触发硬 seek", () => {
+  const before = { ...playback, loop: "track" };
+  const after = { ...before, seq: 6 };
+  assert.ok(Math.abs(cloudPhaseDifference(0.15, 12.25, 12.4, true) - 0.3) < 0.000001);
+  assert.ok(Math.abs(cloudPhaseDifference(12.3, 0.2, 12.4, true) + 0.3) < 0.000001);
+  assert.equal(shouldSnapOnCloudUpdate(before, after, 12.35, 0.15, 12.4), false);
+  assert.equal(shouldSnapOnCloudUpdate(before, after, 8, 0.15, 12.4), true);
 });

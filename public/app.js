@@ -42,6 +42,8 @@ const S = {
   tab: "list",
   busy: "",
   uploading: null,
+  backupUrl: "",
+  backupName: "",
   notice: null,
   claimError: "",
   biliUrl: "",
@@ -316,6 +318,27 @@ function addView() {
   </div>`}`;
 }
 
+/** 云版才有的完整离线备份入口；原 Node/Electron 版布局保持原样。 */
+function cloudBackupView() {
+  if (!window.BARD_CLOUD) return "";
+  const disabled = S.busy ? "disabled" : "";
+  const download = S.backupUrl
+    ? `<a class="btn block primary" style="display:block;text-align:center;margin-top:10px"
+        href="${esc(S.backupUrl)}" download="${esc(S.backupName)}">下载已生成的 ZIP 备份</a>`
+    : "";
+  return `
+    <div class="section">歌单备份与恢复</div>
+    <div class="setting-desc">浏览器缓存可能被清理，建议定期导出包含原始音频的 ZIP 文件。</div>
+    <div class="row2" style="margin-top:12px">
+      <button class="btn block" data-act="backup-export" ${disabled}>生成完整备份</button>
+      <button class="btn block" data-act="backup-import" ${disabled}>从 ZIP 恢复</button>
+    </div>
+    <input id="backup-file" type="file" accept=".zip,application/zip" hidden />
+    ${download}
+    <div class="foot">文件只会保存到你手动下载的位置，不会上云。恢复时只增加缺失歌曲，不会自动开始播放。</div>
+  `;
+}
+
 function settingsView() {
   const ask = askHtml();
   const st = S.state?.settings || {};
@@ -347,6 +370,7 @@ function settingsView() {
   <div class="kv"><span>房间号</span><span>${esc(S.roomId.slice(0, 12))}…</span></div>
   <div class="kv"><span>控制权</span><span>${S.status.hasToken ? "已取得" : "未取得"}</span></div>
   <div class="kv"><span>曲目数</span><span>${S.state?.playlist?.length ?? 0}</span></div>
+  ${cloudBackupView()}
   ${window.BARD_CLOUD ? '<div class="foot">云端版：播放控制权由 Owlbear 房主角色决定；房间同步不发送服务器心跳。</div>' : `<div class="row2" style="margin-top:14px">
     <button class="btn block" data-act="reclaim">重新取得控制权</button>
     <button class="btn block" data-act="release">让出控制权</button>
@@ -574,6 +598,42 @@ async function doUpload(files) {
   await refreshState();
 }
 
+/** 将完整歌单与本机音频生成 ZIP。必须再点击下载，才能确保保存到浏览器外部。 */
+async function doExportBackup() {
+  if (!window.BARD_CLOUD || !window.__cloudBridge) return;
+  S.busy = "backup-export";
+  render(true);
+  try {
+    const archive = await window.__cloudBridge.exportBackup();
+    if (S.backupUrl) URL.revokeObjectURL(S.backupUrl);
+    S.backupUrl = URL.createObjectURL(archive);
+    S.backupName = `gugu-music-backup-${new Date().toISOString().slice(0, 10)}.zip`;
+    toast("ZIP 已准备好，请点击「下载已生成的 ZIP 备份」并确认保存。");
+  } catch (err) {
+    toast(`备份失败：${err.message}`, "err", 7000);
+  } finally {
+    S.busy = "";
+    render(true);
+  }
+}
+
+/** 用户主动选取备份文件；验证 ZIP/CRC/SHA256 后才会写入本地曲库。 */
+async function doImportBackup(file) {
+  if (!file || !window.BARD_CLOUD || !window.__cloudBridge) return;
+  S.busy = "backup-import";
+  render(true);
+  try {
+    const { restored, added } = await window.__cloudBridge.importBackup(file);
+    toast(`已恢复 ${restored} 份音频，向歌单补充 ${added} 首。`);
+    await refreshState();
+  } catch (err) {
+    toast(`恢复失败：${err.message}`, "err", 7000);
+  } finally {
+    S.busy = "";
+    render(true);
+  }
+}
+
 // ---------- 事件 ----------
 document.addEventListener("click", (ev) => {
   const el = ev.target.closest("[data-act]");
@@ -591,6 +651,8 @@ document.addEventListener("click", (ev) => {
     askConfirm("从歌单移除这首？", { type: "playlist", op: "remove", trackId: id });
   } else if (act === "pick-file") document.getElementById("file")?.click();
   else if (act === "add-bili") addBilibili();
+  else if (act === "backup-export") doExportBackup();
+  else if (act === "backup-import") document.getElementById("backup-file")?.click();
   else if (act === "toggle-hide") command({ type: "settings", hideTitle: !S.state?.settings?.hideTitle });
   else if (act === "unlock") bus?.post({ t: "unlock" });
   else if (act === "reclaim") claim();
@@ -779,6 +841,10 @@ document.addEventListener("change", (ev) => {
   if (ev.target.id === "file") {
     doUpload(ev.target.files || []);
     ev.target.value = "";
+  } else if (ev.target.id === "backup-file") {
+    const file = ev.target.files?.[0];
+    ev.target.value = "";
+    if (file) doImportBackup(file);
   } else if (ev.target.dataset.act === "master-vol") {
     // 松手：立刻把最终音量发出去，不依赖节流定时器
     flushMasterVolume(Number(ev.target.value) / 100);

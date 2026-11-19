@@ -22,7 +22,7 @@ export function createState(secret) {
     playlist: [],
     playback: {
       trackId: null, playing: false, position: 0, anchor: Date.now(),
-      seq: 1, loop: "list", volume: 1,
+      seq: 1, loop: "list", volume: 1, clockId: "",
     },
     settings: { hideTitle: false },
     folders: ["探索", "战斗"],
@@ -133,7 +133,18 @@ export function applyCommand(state, cmd, now = Date.now()) {
       // 仅处理与当前播放序列一致的结束事件，避免延迟命令跳过新歌。
       if (cmd.expectedSeq !== undefined && cmd.expectedSeq !== p.seq) return s;
       if (!p.playing) return s;
-      if (p.loop === "track") { p.position = 0; p.playing = true; bump(); }
+      if (p.loop === "track") {
+        const duration = Number(s.playlist.find((t) => t.id === p.trackId)?.duration);
+        // 移动端在锁屏中可能暂停 JS 定时器，但 HTMLAudioElement 已自然
+        // 循环多次。恢复后的 ended 不能再把目标位置强制设成 0：
+        // 否则例如第 3 圈 2.1 秒时，所有正常播放的客户端都会突然倒退。
+        // 使用源设备时间轴上的「实际相位」续写锚点，循环边界不打断声音。
+        const phase = Number.isFinite(duration) && duration > 0
+          ? oldPosition() % duration : 0;
+        p.position = phase;
+        p.playing = true;
+        bump();
+      }
       else step(1, true);
       break;
     case "stop": p.position = 0; p.playing = false; bump(); break;

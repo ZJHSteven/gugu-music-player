@@ -95,6 +95,24 @@ test("自动结束携带播放序列号：延迟或重复的 ended 绝不跳过�
   assert.equal(s.playback.playing, false);
 });
 
+test("短歌循环即使后台定时器延迟，也保留当前相位而不把音乐跳回零秒", () => {
+  const s0 = twoTracks();
+  const duration = 12.4;
+  const first = s0.playlist[0];
+  first.duration = duration;
+  let s = applyCommand(s0, { type: "settings", loop: "track" }, 100_000);
+  s = applyCommand(s, { type: "select", trackId: first.id }, 100_000);
+  // 正常情况下下一轮刚开始 0.1s 才收到消息。
+  s = applyCommand(s, { type: "ended", expectedSeq: s.playback.seq }, 112_500);
+  assert.ok(Math.abs(s.playback.position - 0.1) < 0.00001);
+  // JS 被系统暂停 38s 才恢复时，应恢复到第 4 轮已经走过的 0.8s，
+  // 而不是跳回开头并与其余浏览器产生突兀的不同步。
+  const nextNow = 112_500 + 38_000;
+  s = applyCommand(s, { type: "ended", expectedSeq: s.playback.seq }, nextNow);
+  const predicted = (38_000 / 1000 + 0.1) % duration;
+  assert.ok(Math.abs(s.playback.position - predicted) < 0.00001);
+});
+
 test("隐私设置、分类管理及非法操作", () => {
   let s = twoTracks();
   s = applyCommand(s, { type: "settings", hideTitle: true });
