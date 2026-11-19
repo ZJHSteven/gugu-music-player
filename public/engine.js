@@ -808,7 +808,9 @@ export class Engine {
         hasToken: Boolean(this.token),
         claimError: this.claimError,
         volume: this.localVolume,
-        error: this.audio.error ? `音频加载失败（${this.audio.error.code}）` : "",
+        error: this.audio.error?.code === 4
+          ? "浏览器无法解码当前歌曲或媒体类型缺失（错误4）；可尝试MP3/M4A"
+          : this.audio.error ? `音频加载失败（${this.audio.error.code}）` : "",
       },
     });
   }

@@ -78,6 +78,14 @@ function mediaStatus(m) {
     networkState: finite(m.networkState),
     mediaErrorCode: finite(m.errorCode),
     playError: short(m.errorName, 40),
+    // 报告格式支持情况，便于区分「确实不支持格式」与「用户手势未授权」。
+    // 不复制 blob URL、音频内容或任何完整歌曲标识。
+    sourceType: /^audio\/[a-z0-9+.-]+$/i.test(m.source?.mime || "")
+      ? m.source.mime : null,
+    cachedFileType: /^audio\/[a-z0-9+.-]+$/i.test(m.source?.storedMime || "")
+      ? m.source.storedMime : null,
+    browserCanPlay: ["probably", "maybe"].includes(m.source?.canPlayType)
+      ? m.source.canPlayType : "no-or-unknown",
     blocked: Boolean(m.blocked),
     buffering: Boolean(m.buffering),
     playbackRate: finite(m.rate),
@@ -103,7 +111,8 @@ function serverStatus(server) {
 }
 
 function environment(ua = "") {
-  const name = /Firefox\//.test(ua) ? "Firefox" :
+  const name = /QQ\//.test(ua) || /MQQBrowser/.test(ua) ? "QQ 内置浏览器" :
+    /Firefox\//.test(ua) ? "Firefox" :
     /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" :
       /Safari\//.test(ua) ? "Safari" : "其他浏览器";
   const os = /Android/i.test(ua) ? "Android" : /iPhone|iPad|iPod/i.test(ua) ?
