@@ -2,6 +2,8 @@
 
 ## v3.2.7 iPhone Chrome 无痕模式、下载故障与滚动热修复
 
+- **2026-11-20 02:22（北京时间）正式已上线 v3.2.7**：由隔离工作树的 Wrangler 将 6 个新增/修改的 Static Assets 上传并部署到 `gugu-music-cloud` 与 `music.zjhstudio.com`，Worker Version ID `68c4c493-0efe-44f6-9e8f-f17f42606603`。随后 Cloudflare API 独立确认此版本占部署流量100%。本地原开发分支不受影响。公开站点的 HTTP manifest 本轮网络访问超时，不能虚报已通过在线 GET 回归；真实 iPhone、用户房间音频复测仍待进行。
+
 - 独立工作区 D:\Workspace\gugu-music-player-hotfix-v327，分支 hotfix/ios-private-cache-v327。从生产 v3.2.6 建立，未混入 v3.3 开发功能。
 - 用户 2026-11-19 17:56 UTC 诊断：弹窗与背景 iframe 各接收 2,188,046 字节，服务器各转发约 2.19MB，filesVerified=0、收到 errorName=Error。完整字节传入但未验收；可能是 SHA256 校验或浏览器本地持久存储错误，不能归咎于无痕模式。瞬时 waiting=0 是请求失败清理后的状态，累计 requests=1 证明发起过请求。
 - v3.2.6 manifest 已升级，而诊断版本仍硬编码为 v3.2.5。用户报告并不能证明仍运行旧脚本。v3.2.7 让构建清单与诊断共享版本常量，并识别 iOS Chrome 的 CriOS UA。
