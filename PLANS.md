@@ -30,9 +30,12 @@
 - [x] 假 Owlbear SDK 下 GM/PLAYER 房间事件、控制指令、权限和独立浏览器文件同步（2026-11-19）
 - [x] 真实 Owlbear 源跨域读取云版 v3.2.1 manifest（CORS / 绝对 URL 检验）
 - [x] Owlbear 账户安装云版自定义扩展
-- [ ] 在用户现有 The Cured Tying 房间启用扩展（宿主扩展列表 26 张骨架卡，开关 disabled；当前未启用）
+- [x] 在用户现有 The Cured Tying 房间启用扩展（从官方 Profile → Edit Room 入口启用，绕过宿主扩展列表骨架卡）
 - [ ] 公网 30 MiB 文件、复杂断线与多设备重传
 - [ ] IndexedDB 后备、iOS/Safari 存储驱逐与后台声音真机验收
 - [x] 纯静态文件 + hibernatable DO 无 HTTP Node API 依赖
 - [x] Workers 上线和域名验证
-- [ ] Owlbear 实际房间多端播放验证
+- [x] Owlbear 真实 GM + 两名独立访客进入同房间，房主批准、SDK 元数据和广播、歌单传输、控制权限、暂停与拖动、按时自动切歌
+- [x] 真实 Cloudflare DO GM→玩家、关闭 GM 中继时玩家 A→玩家 B 文件分发；两段 WAV 完整校验；重新加载后 OPFS 缓存复用
+- [x] 修复隐藏 Owlbear iframe 首次渲染卡死、时钟超出曲长、同源双 iframe 重复文件请求
+- [ ] 浏览器解除自动播放限制后验证实际扬声器发声（当前锁屏/隐藏页被 Chrome 拒绝自动播放），以及手机 iOS/Firefox/Android 真机

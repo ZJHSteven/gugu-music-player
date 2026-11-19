@@ -1,4 +1,4 @@
-# 云端版当前状态（2026-11-18）
+# 云端版当前状态（2026-11-19）
 
 ## 当前结论
 
@@ -6,9 +6,10 @@
 - 开发分支 `feat/cloud-do-opfs`，独立于原 Electron QA 分支及上游原版。
 - 原版靠 Node/SSE/HTTP 管理播放；云版已用 Owlbear Room Metadata/Broadcast 替代，保留原 UI。
 - 云版只把音频放在玩家的 OPFS/IndexedDB；Cloudflare Durable Object 仅经可休眠 WebSocket 中继二进制文件，不储存歌曲、不处理播放指令、不发心跳。
-- 当前已验证：状态机/二进制单元测试 10/10；原版 Node 服务测试 42/42、Edge UI 回归 61/61；本地真实 DO 的 2 MiB 与 30 MiB、GM 下线后玩家中继；Chrome 双标签 GM/玩家同步；独立无痕浏览器 OPFS 获取缺失的 32 KiB 与 3 MiB 文件，哈希正确。
-- 最新生产测试：HTTPS 200、manifest 正常，更新后的 8 块 ACK 窗口版 `46f93e83-ae8d-4bb4-9ae3-268f70687ae3` 已部署；公网 1 MiB 9.8s、GM 离线后玩家间 4 MiB 27.5s，均完成 SHA-256 校验。30 MiB 公网测试此前中途停止，尚无通过结论。
-- GitHub 已同步开发分支 `ZJHSteven/gugu-music-player:feat/cloud-do-opfs`；没有合入上游主线或覆盖原 Electron QA 分支。
+- 当前已验证：云版单元测试 **11/11**、原版 Node 服务测试 **42/42**、Edge UI 回归 **61/61**。本地真实 DO 的 2 MiB 与 30 MiB、独立存储环境 3 MiB；公网曾完成 1 MiB 和 GM 离线的 4 MiB 传输，SHA-256 均一致。
+- **真实 Owlbear 正式房间 E2E 已通过主要功能**：The Cured Tying 房间的 GM + 两个独立访客，完成官方审批、SDK Metadata/Broadcast、320044B WAV 与 272044B WAV 公网中继、玩家间互传、角色权限、暂停/5.75 秒 seek/恢复、20 秒循环、访客刷新仍保留 OPFS 缓存、同源 iframe 避免重复请求。详细实测证据见 `docs/real-owlbear-e2e-2026-11-19.md`。
+- 正式生产最新版 Cloudflare Worker 部署 ID：`df4d2d45-46ef-4cfd-912f-c2c749d04333`；manifest 为 v3.2.1。**没有验证锁屏浏览器的实际扬声器发声**：Chrome 因无用户手势而拒绝 GM 后台 `Audio.play()`，但双方 WAV 可解码，时钟和控制事件已通过。公网 30 MiB 和移动端真机仍待验收。
+- GitHub 开发分支为 `ZJHSteven/gugu-music-player:feat/cloud-do-opfs`，本轮最新改动将随验收提交推送；没有合入上游主线或覆盖原 Electron QA 分支。
 
 ## 技术约束
 
@@ -20,6 +21,8 @@
 - Edge UI 测试偶发 `chrome-extension://abkclgdmdkokpdkbpdkoiiemhcaafbkg` 注入脚本异常，已保留详细异常记录，并只将可明确归属外部扩展的错误排除；最终原版 61/61 通过。
 
 ## 下一步
+
+- **2026-11-19 最新收口结论**：真实 Owlbear 三端数据流、跨玩家文件转发、后台时钟、歌单与权限已验收通过；两名测试访客的独立 BrowserContext 和临时 Profile 标签页已关闭。两首仅用于测试的歌曲已从真实房间歌单删除（修订号 15、0 首、停止播放，其他扩展的 Metadata 键保持不变），GM 原站点 OPFS 中对应两个测试文件也已准确清理。原有 GM 房间和已启用的云版扩展保留。后续优先在用户桌面实际可发声时测试音频自动播放解锁、系统后台策略，其次跑公网 30 MiB、移动 Safari/Firefox、IndexedDB 回退。
 
 - 2026-11-19 真实 Owlbear CDP 验收发现首个安装阻塞：Owlbear 页面跨域 fetch 云版 manifest 触发 CORS，已在云版构建工具中为公开静态资源生成 `_headers`，待部署后重验。假 SDK GM/玩家跨标签事件、权限拒绝与独立浏览器 320044 字节文件 SHA256 校验通过。
 - CORS 修复已部署（64fa7750），真实 Owlbear 添加自定义插件的弹窗已经能够读取并展示完整 manifest。进一步观察到宿主将相对图标 URL `./icon.png` 拼成了带尾点主机名的异常路径；云版改为绝对 HTTPS manifest 资源地址（v3.2.1），待重新发布重试。当前 Owlbear 扩展列表仍显示大量骨架屏，部分宿主 API 请求异常，不能把“已点击 ADD”当作房间扩展启用成功。
