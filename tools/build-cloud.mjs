@@ -25,7 +25,20 @@ const manifestPath = path.join(destination, "manifest.json");
 const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
 manifest.name = "咕咕点歌台 · 云端版";
 manifest.description = "咕咕点歌台云端版：OPFS 本地曲库、DO 按需文件共享、Owlbear 房间播放同步。";
-manifest.version = "3.2.0";
+manifest.version = "3.2.1";
+
+// 真正的 Owlbear 房间安装时还发现：宿主对相对路径 ./icon.png 的解析
+// 偶尔变成 https://music.zjhstudio.com./icon.png（主机名末尾多出一个点）。
+// 这会让图标、背景 iframe 和点歌面板加载失败。云版明确写出完整 URL，
+// 避开宿主的路径拼接细节；原 Node/Electron 版的相对路径完全保留。
+const cloudOrigin = (process.env.GUGU_CLOUD_ORIGIN || "https://music.zjhstudio.com").replace(/\/+$/, "");
+manifest.icon = `${cloudOrigin}/icon.png`;
+manifest.background_url = `${cloudOrigin}/background.html`;
+manifest.action = {
+  ...manifest.action,
+  icon: `${cloudOrigin}/icon-action.svg`,
+  popover: `${cloudOrigin}/`,
+};
 await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
 
 // Owlbear Rodeo 的扩展管理页运行在 https://www.owlbear.rodeo，
