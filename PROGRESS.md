@@ -1,4 +1,14 @@
-# 云端版当前状态（2026-11-19）
+# 云端版当前状态（2026-11-20）
+
+## v3.2.7 iPhone Chrome 无痕模式、下载故障与滚动热修复
+
+- 独立工作区 D:\Workspace\gugu-music-player-hotfix-v327，分支 hotfix/ios-private-cache-v327。从生产 v3.2.6 建立，未混入 v3.3 开发功能。
+- 用户 2026-11-19 17:56 UTC 诊断：弹窗与背景 iframe 各接收 2,188,046 字节，服务器各转发约 2.19MB，filesVerified=0、收到 errorName=Error。完整字节传入但未验收；可能是 SHA256 校验或浏览器本地持久存储错误，不能归咎于无痕模式。瞬时 waiting=0 是请求失败清理后的状态，累计 requests=1 证明发起过请求。
+- v3.2.6 manifest 已升级，而诊断版本仍硬编码为 v3.2.5。用户报告并不能证明仍运行旧脚本。v3.2.7 让构建清单与诊断共享版本常量，并识别 iOS Chrome 的 CriOS UA。
+- 中继新增 wire/integrity/storage/notification 四阶段有限枚举错误诊断；接收完成但 SHA256 不一致明确报告 hash-mismatch。OPFS 和 IndexedDB 同时无法写入时，仅对 SHA256 成功的文件使用 96MiB 有界单iframe会话内存缓存，刷新后丢失；报告可标注 storage=memory，不能充当永久备份。
+- iPhone 窄屏触摸视口内，点歌面板高度限制至最多320px，内部 scroll 容器留出150px底部滚动余量，以处理宿主 iframe 名义640px但可见高度较小的情况。420x640 Chrome 触屏仿真：面板高度320px，滚动区265px、内容高1042px，程序滚动750px后底部复制按钮位于顶部177–197px可见。CDP手指滑动模拟未成功，真正iPhone WebKit必须单独验收。
+- 完成自动化：Cloud 30/30，build 与 verify 云端v3.2.7通过，传统Node 42/42、Edge UI 61/61。测试覆盖双存储拒绝、校验失败、诊断版本/浏览器字段。真实iOS尚未复测，不能宣称完全解决。
+- 播放控制仍由 Owlbear GM 的 Room Metadata/Broadcast 权威时间轴负责；Cloudflare Durable Object 仅负责文件中继，玩家的开启声音不赋予独立拖动或暂停权。
 
 ## 当前结论
 
