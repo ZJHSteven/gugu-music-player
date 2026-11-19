@@ -67,7 +67,14 @@ function render(force) {
   if (S.sliderActive) return;
   if (queued && !force) return;
   queued = true;
-  requestAnimationFrame(() => {
+  // Owlbear 的 popover iframe 在用户尚未展开面板时通常处于 hidden。
+  // Chrome 等浏览器会暂停隐藏 iframe 的 requestAnimationFrame；如果把首次
+  // 渲染也交给它，GM/玩家角色和歌单即使早已从 SDK 获取，界面仍会永久显示
+  // 「正在连接…」。真实 Owlbear GM 房间里已复现：rAF 不执行而 setTimeout 正常。
+  //
+  // 显示中的面板继续使用 rAF 合并重绘，隐藏时改用一次性任务定时器。
+  // 这里不是轮询或心跳，只保证收到状态变化后能完成那一次 DOM 更新。
+  const paint = () => {
     queued = false;
     const sig = JSON.stringify({
       role: S.role,
@@ -105,7 +112,9 @@ function render(force) {
       "dot" + (S.claimError ? " err" : S.status.connected === false ? " warn" : " on");
     document.getElementById("view").innerHTML = S.role === "GM" ? gmView() : playerView();
     updateLive();
-  });
+  };
+  if (document.hidden) setTimeout(paint, 0);
+  else requestAnimationFrame(paint);
 }
 
 function noticeHtml() {
