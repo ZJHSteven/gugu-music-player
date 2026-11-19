@@ -21,6 +21,9 @@ export function sniffAudioMime(bytes) {
   if (arr.length < 4) return null;
   const ascii = (from, length) => String.fromCharCode(...arr.slice(from, from + length));
   if (ascii(0, 4) === "RIFF" && ascii(8, 4) === "WAVE") return "audio/wav";
+  // ADTS AAC 与 MP3 都可能以 0xff 0xf? 开头；先匹配更具体的 ADTS，
+  // 否则会把 AAC 误认成 MP3，在 iOS 上制造新的错误 4。
+  if (arr[0] === 0xff && (arr[1] & 0xf6) === 0xf0) return "audio/aac";
   if (ascii(0, 3) === "ID3" ||
       (arr[0] === 0xff && (arr[1] & 0xe0) === 0xe0)) return "audio/mpeg";
   if (ascii(0, 4) === "OggS") return "audio/ogg";
@@ -30,7 +33,6 @@ export function sniffAudioMime(bytes) {
       (ascii(8, 4) === "AIFF" || ascii(8, 4) === "AIFC")) return "audio/aiff";
   if (arr[0] === 0x1a && arr[1] === 0x45 && arr[2] === 0xdf &&
       arr[3] === 0xa3) return "audio/webm";
-  if (arr[0] === 0xff && (arr[1] & 0xf6) === 0xf0) return "audio/aac";
   return null;
 }
 

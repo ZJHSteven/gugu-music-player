@@ -27,3 +27,12 @@ test("保留原有M4A、WAV、FLAC、Ogg格式而不擅自转码", async () => {
     "audio/x-m4a");
   assert.equal(unknown.blob.type, "audio/mp4");
 });
+
+test("ADTS AAC 头不能错误判为 MP3", async () => {
+  const aac = new Uint8Array([
+    0xff, 0xf1, 0x50, 0x80, 0x01, 0x1f, 0xfc, 0, 0, 0, 0, 0,
+  ]);
+  assert.equal(sniffAudioMime(aac), "audio/aac");
+  assert.equal((await playableAudioSource(new Blob([aac]), "audio/mpeg")).mime,
+    "audio/aac");
+});
