@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { IosSyncAudio, expectedRoomPhase, phaseError } from
+import { IosSyncAudio, silentUnlockWav, expectedRoomPhase, phaseError } from
   "../../public/cloud/ios-sync-audio.js";
 
 class FakeAudio {
@@ -99,13 +99,93 @@ test("用户点击在同一调用栈同步执行Audio.play，播放器没有可�
   assert.deepEqual(handoffs, [true, false]);
 });
 
-test("未下载完不允许播放，也不会为了初始化媒体而抢占背景引擎", async () => {
+test("歌曲尚未下载完成也可先开启Safari声音：一次用户点击启动静音授权，不抢后台", async () => {
   const { audio, player, handoffs } = make(105_000, { getFile: async () => null });
   await player.prepare();
   assert.equal(player.ready, false);
-  assert.equal(player.enableFromUserGesture(), false);
-  assert.equal(audio.playCount, 0);
+  assert.equal(player.enableFromUserGesture(), true);
+  assert.equal(audio.playCount, 1, "不能等下载完成之后才调用用户手势里的play()");
+  await sleepTick();
+  assert.equal(player.armed, true);
+  assert.equal(player.authorized, true);
+  assert.equal(audio.controls, false, "绝不能暴露原生进度条给普通玩家");
   assert.deepEqual(handoffs, []);
+  player.close();
+});
+
+test("静音授权WAV是有效的零样本PCM文件，而非无法解码的空Blob", async () => {
+  const blob = silentUnlockWav();
+  const arr = new Uint8Array(await blob.arrayBuffer());
+  assert.equal(blob.type, "audio/wav");
+  assert.equal(String.fromCharCode(...arr.slice(0, 4)), "RIFF");
+  assert.equal(String.fromCharCode(...arr.slice(8, 12)), "WAVE");
+  assert.equal(arr.length, 4044);
+  assert.ok(arr.slice(44).every((x) => x === 0));
+});
+
+test("另一iframe延迟传完音频后，无需第二次点击即可自动按GM时间表接续", async () => {
+  let fileAvailable = false;
+  let getCount = 0;
+  const { audio, player, handoffs } = make(105_000, {
+    getFile: async () => {
+      getCount++;
+      return fileAvailable ? new Blob(["ID3-complete-audio"]) : null;
+    },
+  });
+  await player.prepare();
+  player.enableFromUserGesture();
+  await sleepTick();
+  assert.equal(audio.playCount, 1);
+  assert.equal(player.armed, true);
+  assert.deepEqual(handoffs, [], "静音预授权还不是真实歌曲出声");
+  fileAvailable = true;
+  await player.prepare(state(), { force: true }); // 模拟同源iframe校验完成通知
+  await sleepTick();
+  assert.equal(getCount, 2);
+  assert.equal(player.ready, true);
+  assert.equal(player.active, true);
+  assert.equal(audio.playCount, 2, "必须复用刚收到手势的同一个Audio");
+  assert.ok(Math.abs(audio.currentTime - 5) < 0.05);
+  assert.deepEqual(handoffs, [true]);
+  player.close();
+});
+
+test("音频下载与静音play()的Promise并发，不能提前切源取消首次授权", async () => {
+  let complete;
+  const input = new Promise((resolve) => { complete = resolve; });
+  let finishPlay;
+  const playResult = new Promise((resolve) => { finishPlay = resolve; });
+  const { audio, player, handoffs } = make(105_000, { getFile: () => input });
+  audio.play = function () {
+    this.playCount++;
+    this.paused = false;
+    return this.playCount === 1 ? playResult : Promise.resolve();
+  };
+  const loading = player.prepare();
+  assert.equal(player.enableFromUserGesture(), true);
+  complete(new Blob(["ID3-music"]));
+  await loading;
+  assert.equal(player.ready, false, "首个play()未获准前只能暂存真正的音乐Blob");
+  assert.ok(player.pendingSource);
+  finishPlay();
+  await sleepTick();
+  assert.equal(player.ready, true);
+  assert.equal(player.active, true);
+  assert.deepEqual(handoffs, [true]);
+  player.close();
+});
+
+test("同一12秒循环的重复now广播不会销毁Audio或重复播放", async () => {
+  const { audio, player } = make();
+  await player.prepare();
+  player.enableFromUserGesture();
+  await sleepTick();
+  const firstSrc = audio.src;
+  const count = audio.playCount;
+  for (let i = 0; i < 25; i++) await player.prepare(state(105_000 + i * 500));
+  assert.equal(audio.playCount, count);
+  assert.equal(audio.src, firstSrc);
+  assert.equal(player.active, true);
   player.close();
 });
 
