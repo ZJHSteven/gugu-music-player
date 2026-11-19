@@ -21,7 +21,15 @@ export class RelayClient {
     this.roomId = roomId;
     this.secret = secret;
     this.onFile = onFile;
-    this.onError = onError;
+    // 只在当前页面内保存最近的诊断事件，不把浏览器错误自动上传到云端。
+    // 导出的报告只包含固定类型、数量、时间与歌曲摘要前 10 位。
+    this.events = [];
+    this.metrics = { requested: 0, receivedBytes: 0, verified: 0,
+      sendQueuedBytes: 0, reconnects: 0, unavailable: 0, timeouts: 0 };
+    this.onError = (error) => {
+      this.note("error", { name: String(error?.name || "Error").slice(0, 35) });
+      onError(error);
+    };
     this.tracks = [];
     this.ws = null;
     this.owned = new Set();
@@ -47,6 +55,37 @@ export class RelayClient {
     } catch {
       // 隐私限制等环境可能不提供 BroadcastChannel，仍可继续以原流程下载。
     }
+  }
+
+  note(type, fields = {}) {
+    this.events.push({ at: new Date().toISOString(), type, ...fields });
+    if (this.events.length > 50) this.events.shift();
+  }
+
+  /** 供普通玩家一键复制的匿名诊断，不包含 roomId、secret、完整 hash。 */
+  diagnostics() {
+    return {
+      connected: this.ws?.readyState === WebSocket.OPEN,
+      socketState: this.ws?.readyState ?? 3,
+      peer: this.peer?.slice(0, 12) || null,
+      bufferedSendBytes: this.ws?.bufferedAmount || 0,
+      ownedCount: this.owned.size,
+      requestedCount: this.requested.size,
+      files: this.tracks.map((t) => {
+        const rec = this.incoming.get(t.hash);
+        return {
+          hash: t.hash.slice(0, 10),
+          expectedBytes: t.size,
+          cached: this.owned.has(t.hash),
+          requested: this.requested.has(t.hash),
+          receivedBytes: rec?.size || 0,
+          totalChunks: rec?.chunks.length || Math.ceil(t.size / CHUNK_SIZE),
+          receivedChunks: rec?.chunks.filter(Boolean).length || 0,
+        };
+      }),
+      ...this.metrics,
+      events: this.events.slice(-25),
+    };
   }
 
   url() {
@@ -82,6 +121,8 @@ export class RelayClient {
     if (!HASH_RE.test(hash) || this.owned.has(hash) || this.requested.has(hash)) return;
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     this.requested.add(hash);
+    this.metrics.requested++;
+    this.note("request", { hash: hash.slice(0, 10) });
     this.send({ t: "need", hash });
     this.watchTransfer(hash);
   }
@@ -92,6 +133,8 @@ export class RelayClient {
     const timer = setTimeout(async () => {
       this.transferTimeouts.delete(hash);
       if (this.stopped || this.owned.has(hash)) return;
+      this.metrics.timeouts++;
+      this.note("timeout", { hash: hash.slice(0, 10) });
       // 可能刚好错过了其他 iframe 的广播。仅在本次重传前再查一次本地
       // OPFS/IDB；如果文件已有完整副本，就不需要再次向公网请求。
       try {
@@ -146,6 +189,7 @@ export class RelayClient {
     this.ws = ws;
     ws.binaryType = "arraybuffer";
     ws.onopen = () => {
+      this.note("connected");
       this.reconnectDelay = 500;
       this.requested.clear();
       this.incoming.clear();
@@ -157,8 +201,10 @@ export class RelayClient {
       if (typeof e.data === "string") this.onControl(e.data);
       else this.onChunk(e.data).catch(this.onError);
     };
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (this.ws !== ws) return;
+      this.metrics.reconnects++;
+      this.note("disconnected", { code: event?.code || 0 });
       this.ws = null;
       this.requested.clear();
       this.incoming.clear();
@@ -172,7 +218,10 @@ export class RelayClient {
       // 这是浏览器侧断线恢复计时器，不会唤醒任何 DO。
       setTimeout(() => this.connect(), delay);
     };
-    ws.onerror = () => {}; // close 会负责重连，避免双重定时器
+    ws.onerror = () => {
+      // 错误事件往往没有可读 message，仍要留下发生时间给诊断报告。
+      this.note("socket-error");
+    };
   }
 
   async announce(hash) {
@@ -211,6 +260,7 @@ export class RelayClient {
     switch (msg.t) {
       case "welcome":
         this.peer = msg.peer;
+        this.note("identified", { peer: this.peer?.slice(0, 12) });
         break;
       case "ack": {
         const key = `${msg.hash}:${msg.from}`;
@@ -233,6 +283,8 @@ export class RelayClient {
         this.serve(msg.hash, msg.to).catch(this.onError);
         break;
       case "unavailable":
+        this.metrics.unavailable++;
+        this.note("unavailable", { hash: String(msg.hash).slice(0, 10) });
         this.requested.delete(msg.hash);
         this.clearTransferTimeout(msg.hash);
         break;
@@ -255,7 +307,12 @@ export class RelayClient {
     const sent = await sendAudioWithoutAck({
       ws: this.ws, file, hash, from: this.peer, to,
     });
-    if (sent) this.send({ t: "done", hash, to });
+    if (sent) {
+      this.metrics.sendQueuedBytes += file.size;
+      this.note("sent-queued", { hash: hash.slice(0, 10),
+        to: to.slice(0, 12), bytes: file.size });
+      this.send({ t: "done", hash, to });
+    }
     } finally {
       this.serving.delete(serveKey);
       this.lastAck.delete(serveKey);
@@ -285,6 +342,7 @@ export class RelayClient {
     if (bytes.byteLength !== expected) return;
     rec.chunks[header.index] = bytes.slice();
     rec.size += bytes.byteLength;
+    this.metrics.receivedBytes += bytes.byteLength;
     this.watchTransfer(header.hash);
     if ((header.index + 1) % ACK_WINDOW === 0 || header.index + 1 === header.total) {
       this.send({ t: "ack", hash: header.hash, to: header.from, index: header.index });
@@ -299,6 +357,12 @@ export class RelayClient {
       this.requested.delete(header.hash);
       this.clearTransferTimeout(header.hash);
       await this.announce(header.hash);
+      // DO 可区分“服务器转发了字节”和“接收端校验并保存成功”。
+      // 这依旧不等于实际已经听到声音，播放错误由本地音频诊断单独记录。
+      this.send({ t: "verified", hash: header.hash });
+      this.metrics.verified++;
+      this.note("verified", { hash: header.hash.slice(0, 10),
+        bytes: blob.size });
       this.onFile(header.hash);
     } catch (err) {
       this.requested.delete(header.hash);
