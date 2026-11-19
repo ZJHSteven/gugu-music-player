@@ -58,6 +58,7 @@ const S = {
   diagnosticsBusy: false,
   diagnosticsReport: "",
   diagnosticsSummary: "",
+  revealDiagnostics: false, // 只在用户主动展开时滚动；状态消息不抢手指位置
 };
 
 let bus = null;
@@ -127,15 +128,16 @@ function render(force) {
       up: S.uploading ? Math.round(S.uploading.pct * 20) + (S.uploading.done ? "d" : "") : "",
       notice: S.notice?.text || "",
       claim: S.claimError,
-      blocked: S.status.blocked,
-      buffering: Boolean(S.status.buffering),
-      buf: Math.round(Number(S.status.buffered ?? 0)),
-      drf: Math.round(Number(S.status.drift ?? 0)),
+      // 手机背景引擎的缓冲、drift 频繁变化，不应每次重建iOS播放按钮。
+      blocked: iosAudio ? null : S.status.blocked,
+      buffering: iosAudio ? null : Boolean(S.status.buffering),
       connected: S.status.connected,
       hasToken: S.status.hasToken,
       hide: S.state?.settings?.hideTitle,
       err: S.status.error,
       owner: Boolean(S.now?.owner),
+      loop: S.now?.playback?.loop,
+      volume: S.now?.playback?.volume,
       folderTab: S.folderTab,
       folders: (S.state?.folders || []).join("|"),
       fmap: (S.state?.playlist || []).map((t) => t.folder || "").join("|"),
@@ -151,8 +153,18 @@ function render(force) {
     badge.className = `badge ${S.role === "GM" ? "gm" : ""}`;
     document.getElementById("dot").className =
       "dot" + (S.claimError ? " err" : S.status.connected === false ? " warn" : " on");
-    document.getElementById("view").innerHTML =
+    const view = document.getElementById("view");
+    const oldScrollTop = view.scrollTop;
+    view.innerHTML =
       (S.role === "GM" ? gmView() : playerView()) + diagnosticsView();
+    // 房间每轮循环、诊断刷新时不再重置内部滚动位置。
+    view.scrollTop = oldScrollTop;
+    if (S.revealDiagnostics) {
+      S.revealDiagnostics = false;
+      const entry = view.querySelector(".diag-section");
+      if (entry) view.scrollTop += entry.getBoundingClientRect().top -
+        view.getBoundingClientRect().top - 8;
+    }
     updateLive();
   };
   if (document.hidden) setTimeout(paint, 0);
@@ -325,7 +337,8 @@ function nowCard(seekable) {
  * 快进/暂停/切歌；播放位置由 GM 房间统一时间锚点决定。
  */
 function iosSyncButtonHtml() {
-  if (!window.BARD_CLOUD || !iosAudio || !S.now?.track) return "";
+  // 在短曲循环边界临时缺少解析歌曲信息，也必须保留按钮和点击授权能力。
+  if (!window.BARD_CLOUD || !iosAudio) return "";
   return `<section class="ios-sync-panel">
     <button class="btn primary block" data-act="ios-enable">开启并同步房间声音</button>
     <div class="ios-sync-status" data-ios-sync-status>
@@ -755,7 +768,10 @@ document.addEventListener("click", (ev) => {
   const id = el.dataset.id;
 
   if (act === "tab") S.tab = el.dataset.tab;
-  else if (act === "diag-toggle") S.diagnosticsOpen = !S.diagnosticsOpen;
+  else if (act === "diag-toggle") {
+    S.diagnosticsOpen = !S.diagnosticsOpen;
+    if (S.diagnosticsOpen) S.revealDiagnostics = true;
+  }
   else if (act === "diag-generate") { generateDiagnostics(); return; }
   else if (act === "diag-copy") { copyDiagnostics(); return; }
   else if (act === "dismiss") S.notice = null;
@@ -1019,7 +1035,7 @@ async function boot() {
       S.state = state;
       S.now = now;
       iosFollower?.prepare(now);
-      render(true);
+      render();
     });
     // 状态可能先于文件到达；收到 OPFS 校验成功事件后再准备可播放源。
     cloud.onFile(() => iosFollower?.prepare(S.now));
