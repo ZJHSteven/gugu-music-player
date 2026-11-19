@@ -32,6 +32,7 @@ GM 将本地音频拖入“添加”页，音频优先保存到当前浏览器 O
 npm ci
 npm run test:cloud
 npm run build:cloud
+npm run verify:cloud
 npx wrangler dev --local --port 8790
 ```
 
