@@ -25,7 +25,9 @@ const manifestPath = path.join(destination, "manifest.json");
 const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
 manifest.name = "咕咕点歌台 · 云端版";
 manifest.description = "咕咕点歌台云端版：OPFS 本地曲库、DO 按需文件共享、Owlbear 房间播放同步。";
-manifest.version = "3.2.1";
+// 仅修补生产版音频发送端 2 MiB ACK 硬阻塞；不同于尚未实机验收的
+// 开发分支 v3.2.2，其他功能和房间元数据格式仍维持上一版。
+manifest.version = "3.2.2";
 
 // 真正的 Owlbear 房间安装时还发现：宿主对相对路径 ./icon.png 的解析
 // 偶尔变成 https://music.zjhstudio.com./icon.png（主机名末尾多出一个点）。
