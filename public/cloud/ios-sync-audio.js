@@ -23,6 +23,39 @@ import { playableAudioSource } from "./audio-source.js";
 
 const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
 
+/**
+ * iOS 首次点击时，当前歌曲可能尚未下载。此时仍应立刻让音频元素接受
+ * 一次真实用户激活，而不是直接 return 丢掉这次珍贵的触摸事件。
+ *
+ * 构造短而合法的静音 PCM/WAV（不联网，不上传，不改变 GM 房间进度）。
+ * 用同一个 Audio 元素播放并循环这段静音；歌曲到达后再更换它的 src。
+ * WebKit 不保证换源后一定继承许可，所以随后仍检查 play() Promise，
+ * 如果被拒绝，明确提示用户再点一次，而不是伪称音乐已开始播放。
+ */
+export function silentUnlockWav() {
+  const sampleRate = 8000;
+  const samples = 2000; // 250ms，循环时不会产生可听见的声音
+  const bytes = new Uint8Array(44 + samples * 2);
+  const view = new DataView(bytes.buffer);
+  const name = (at, value) => {
+    for (let i = 0; i < value.length; i++) bytes[at + i] = value.charCodeAt(i);
+  };
+  name(0, "RIFF");
+  view.setUint32(4, bytes.length - 8, true);
+  name(8, "WAVE");
+  name(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // 单声道
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  name(36, "data");
+  view.setUint32(40, samples * 2, true);
+  return new Blob([bytes], { type: "audio/wav" });
+}
+
 /** 与 GM 时间锚点对齐：不以本地上一轮实际结束时刻计算下一轮。 */
 export function expectedRoomPhase(now, at = Date.now()) {
   if (!now?.track || !now?.playback) return null;
@@ -83,6 +116,13 @@ export class IosSyncAudio {
     this.lastPlaybackSeq = null;
     this.error = "";
     this.timer = null;
+    this.armed = false; // 先获得音频用户激活，文件下载完成后自动接续
+    this.priming = false;
+    this.primingUrl = null; // 临时静音WAV Blob URL（不得长期占用存储）
+    this.pendingSource = null; // 下载恰好与首次解锁并发时，延后换源
+    this.retryTimer = null;
+    this.retryAt = 0;
+    this.retryAttempts = 0;
 
     this.audio.addEventListener?.("error", () => {
       this.error = this.audio.error?.code === 4
@@ -101,6 +141,8 @@ export class IosSyncAudio {
       ready: this.ready,
       active: this.active,
       authorized: this.authorized,
+      armed: this.armed,
+      waitingForFile: !this.ready && Boolean(this.getNow()?.track),
       loading: this.loading,
       playingInRoom: Boolean(p?.playing),
       error: this.error,
@@ -120,48 +162,138 @@ export class IosSyncAudio {
   }
 
   /** 面板启动或收到 GM 当前歌曲时预载，不在此处自动替玩家播放。 */
-  async prepare(now = this.getNow()) {
+  async prepare(now = this.getNow(), { force = false } = {}) {
     const track = now?.track;
     if (this.closed || !track?.hash) return;
-    if (this.trackHash === track.hash && (this.ready || this.loading)) {
+    if (force) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+      this.retryAt = 0;
+    }
+    if (this.trackHash === track.hash &&
+        (this.ready || this.loading || this.pendingSource)) {
       this.applyRoomState(now);
       return;
     }
+    // 后台重复广播的 now 消息不是缓存完成事件，不应每隔100ms
+    // 就在OPFS上读取一次同一个还没传完的文件。
+    if (!force && this.trackHash === track.hash && this.nowMs() < this.retryAt) return;
+    const differentTrack = this.trackHash !== track.hash;
     this.trackHash = track.hash;
     this.ready = false;
     this.loading = true;
     this.error = "";
-    if (this.url) this.revokeUrl(this.url);
-    this.url = null;
-    this.audio.pause();
-    this.audio.removeAttribute?.("src");
-    this.audio.load?.();
+    if (differentTrack) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+      this.retryAt = 0;
+      this.retryAttempts = 0;
+      this.pendingSource = null;
+    }
+    if (this.url) {
+      this.revokeUrl(this.url);
+      this.url = null;
+    }
+    // 用户可能在文件下载期间已经点击并开始静音预授权。
+    // 此时绝不能因为新的 now 事件而停止静音 Audio，再丢失 Safari 激活。
+    if (!this.primingUrl) {
+      this.audio.pause();
+      this.audio.removeAttribute?.("src");
+      this.audio.load?.();
+    }
     this.notify();
     try {
       const file = await this.getFile(track.hash);
       if (this.closed || this.trackHash !== track.hash) return;
       if (!file) {
-        this.error = "音频尚未缓存完成；等候自动传输后再开启";
+        // 下载尚未完成不是播放授权失败！本地OPFS稍后重读即可，
+        // 不向DO发新心跳或重复文件传输请求。
+        this.scheduleFileRetry();
         return;
       }
       const source = await this.prepareSource(file, track.mime);
       if (this.closed || this.trackHash !== track.hash) return;
-      this.url = this.createUrl(source.blob);
-      this.audio.src = this.url;
-      this.audio.loop = now.playback?.loop === "track";
-      this.audio.load?.();
-      this.ready = true;
-      this.applyRoomState(now);
-      // 不在 async 回调里代替首次用户激活。
-      // 已经用同一元素成功播放过的 Safari，可能允许换曲后恢复；
-      // 如新曲依然被拦截，通知用户重新按「开启并同步」即可。
-      if (this.authorized && now.playback?.playing) this.resume();
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+      this.retryAt = 0;
+      this.retryAttempts = 0;
+      if (this.priming) {
+        // 静音 audio.play() 还没 resolve，换源会把这次用户手势取消。
+        this.pendingSource = { hash: track.hash, source };
+      } else {
+        this.installSource(track.hash, source);
+      }
     } catch (error) {
       this.error = String(error?.name || "MediaSourceError").slice(0, 40);
     } finally {
       this.loading = false;
       this.notify();
     }
+  }
+
+  /** 只轮询本地缓存，最长5秒一轮；同源其他iframe完成文件后也能及时发现。 */
+  scheduleFileRetry() {
+    if (this.retryTimer || this.closed) return;
+    const delay = Math.min(5000, 750 + this.retryAttempts * 450);
+    this.retryAttempts++;
+    this.retryAt = this.nowMs() + delay;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      if (!this.closed) this.prepare().catch((error) => {
+        this.error = String(error?.name || "CacheRetryError");
+        this.notify();
+      });
+    }, delay);
+  }
+
+  /** 使用同一 Audio 换入真实文件。控制权仍只来自 GM 的房间时间表。 */
+  installSource(hash, source) {
+    if (this.closed || this.trackHash !== hash) return;
+    this.pendingSource = null;
+    if (this.primingUrl) {
+      this.audio.pause();
+      this.audio.removeAttribute?.("src");
+      this.audio.load?.();
+      this.revokeUrl(this.primingUrl);
+      this.primingUrl = null;
+    }
+    this.url = this.createUrl(source.blob);
+    this.audio.src = this.url;
+    this.audio.load?.();
+    this.ready = true;
+    this.error = "";
+    this.applyRoomState(this.getNow());
+    if (this.armed && this.getNow()?.playback?.playing) this.startArmedMusic();
+    this.notify();
+  }
+
+  /** 初次点了静音授权后，真正的歌曲稍晚到达：尝试在同一个元素接上播放。 */
+  startArmedMusic() {
+    if (this.closed || !this.armed || !this.ready ||
+        !this.getNow()?.playback?.playing) return;
+    this.armed = false; // 防止元数据更新导致重复的 play() 并发
+    this.align(true);
+    let result;
+    try { result = this.audio.play(); }
+    catch (error) {
+      this.authorized = false;
+      this.error = String(error?.name || "PlayFailed");
+      this.notify();
+      return;
+    }
+    Promise.resolve(result).then(() => {
+      if (this.closed) return;
+      this.active = true;
+      this.authorized = true;
+      this.onActive(true);
+      if (!this.timer) this.timer = setInterval(() => this.tick(), 250);
+      this.notify();
+    }).catch((error) => {
+      this.authorized = false;
+      this.active = false;
+      this.error = String(error?.name || "PlayRejected");
+      this.notify();
+    });
   }
 
   applyRoomState(now = this.getNow()) {
@@ -173,13 +305,15 @@ export class IosSyncAudio {
     this.audio.volume = clamp(Number(this.getVolume() ?? 1) *
       Number(now.playback.volume ?? 1), 0, 1);
     if (!now.playback.playing) {
-      this.audio.pause();
+      if (!this.primingUrl) this.audio.pause();
       this.notify();
       return;
     }
     if (this.active) {
       this.align(gmChangedPlan);
       this.resume();
+    } else if (this.armed && this.ready) {
+      this.startArmedMusic();
     }
   }
 
@@ -190,10 +324,49 @@ export class IosSyncAudio {
   enableFromUserGesture() {
     if (this.closed) return false;
     if (!this.ready) {
-      this.error = this.loading ? "正在准备音频，请稍后再点一次开启" :
-        "歌曲尚未下载，请稍后再试";
+      // 关键修复：申请Safari音频播放权不依赖于DO已经把歌传完。
+      // 点击的同步执行栈中先启动零样本WAV；完整歌曲到达后用相同
+      // Audio换源并自动按GM时间轴播放，不要求玩家每12秒再点一次。
+      if (this.priming || this.armed) return true;
+      this.error = "";
+      this.priming = true;
+      this.primingUrl = this.createUrl(silentUnlockWav());
+      this.audio.src = this.primingUrl;
+      this.audio.loop = true;
+      this.audio.volume = 1; // WAV样本本身是0，不借助muted绕过播放许可
+      this.audio.load?.();
+      let pending;
+      try { pending = this.audio.play(); }
+      catch (error) {
+        this.priming = false;
+        this.error = String(error?.name || "PlayFailed");
+        this.notify();
+        return false;
+      }
+      Promise.resolve(pending).then(() => {
+        if (this.closed) return;
+        this.priming = false;
+        this.armed = true;
+        this.authorized = true;
+        if (this.pendingSource) {
+          const { hash, source } = this.pendingSource;
+          this.installSource(hash, source);
+        }
+        this.notify();
+      }).catch((error) => {
+        if (this.closed) return;
+        this.priming = false;
+        this.armed = false;
+        this.authorized = false;
+        this.error = String(error?.name || "PlayRejected");
+        if (this.pendingSource) {
+          const { hash, source } = this.pendingSource;
+          this.installSource(hash, source);
+        }
+        this.notify();
+      });
       this.notify();
-      return false;
+      return true;
     }
     const current = this.getNow();
     if (!current?.playback?.playing) {
@@ -284,12 +457,16 @@ export class IosSyncAudio {
     if (this.closed) return;
     this.closed = true;
     if (this.timer) clearInterval(this.timer);
+    if (this.retryTimer) clearTimeout(this.retryTimer);
     this.timer = null;
+    this.retryTimer = null;
     this.audio.pause();
     this.audio.removeAttribute?.("src");
     this.audio.load?.();
     if (this.url) this.revokeUrl(this.url);
+    if (this.primingUrl) this.revokeUrl(this.primingUrl);
     this.url = null;
+    this.primingUrl = null;
     if (this.active) this.onActive(false);
     this.active = false;
   }
