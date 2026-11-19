@@ -4,6 +4,7 @@ import { Engine } from "./engine.js";
 import { initCloudBridge } from "./cloud/bridge.js";
 import { makeDiagnosticReport } from "./cloud/diagnostics.js";
 import { shouldRetryOwlbear, resetOwlbearRetries } from "./obr-identity.js";
+import { IosSyncAudio } from "./cloud/ios-sync-audio.js";
 
 window.__appBuild = "build-folders-1";
 
@@ -67,6 +68,38 @@ let engine = null;
 let heardBg = false;
 let lastSig = "";
 let queued = false;
+// 只在 iPhone/iPad 的云端 iframe 创建受 GM 控制的音频输出；
+// 其他平台继续使用已验收的后台 Engine，避免扩大修复影响面。
+const iosAudio = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+let iosFollower = null;
+let iosFollowerStatus = null;
+
+function initIosFollower() {
+  if (!window.BARD_CLOUD || !iosAudio || iosFollower) return;
+  iosFollower = new IosSyncAudio({
+    getNow: () => window.__cloudBridge?.getNow?.() || S.now,
+    getVolume: () => S.status?.volume ?? 0.85,
+    onStatus: (status) => {
+      iosFollowerStatus = status;
+      const label = document.querySelector("[data-ios-sync-status]");
+      if (label) label.textContent = status.error ||
+        (!status.playingInRoom ? "GM 当前已暂停，本机跟随暂停" :
+          status.active ? `与 GM 同步中，偏差约 ${status.driftMs} ms` :
+          status.loading ? "正在准备同步音频…" :
+            status.ready ? "音频已缓存；点下方按钮开启同步声音" :
+              "正在等待完整音频缓存");
+    },
+    onActive: (active) => {
+      bus?.post({ t: active ? "foreground-playback-on" : "foreground-playback-off" });
+    },
+  });
+  // 同一个 Audio 元素贯穿整个面板生命周期；不提供 controls 或拖动条。
+  iosFollower.audio.className = "ios-sync-hidden-audio";
+  iosFollower.audio.setAttribute("aria-hidden", "true");
+  document.querySelector(".app")?.appendChild(iosFollower.audio);
+}
+
+window.addEventListener("pagehide", () => iosFollower?.close());
 
 // ---------- 渲染 ----------
 function render(force) {
@@ -215,6 +248,7 @@ async function generateDiagnostics() {
       trackLoaded: Boolean(S.now?.track),
       trackDuration: S.now?.track?.duration ?? null,
       playingInRoom: Boolean(S.now?.playback?.playing),
+      iosSynchronizedPlayback: iosFollower?.status() || null,
       engine: background,
       panelRelay,
       server,
@@ -292,6 +326,24 @@ function nowCard(seekable) {
   </div>`;
 }
 
+/**
+ * iOS 用户激活入口：只允许一次性开启本机声音，不提供 PLAYER
+ * 快进/暂停/切歌；播放位置由 GM 房间统一时间锚点决定。
+ */
+function iosSyncButtonHtml() {
+  if (!window.BARD_CLOUD || !iosAudio || !S.now?.track) return "";
+  return `<section class="ios-sync-panel">
+    <button class="btn primary block" data-act="ios-enable">开启并同步房间声音</button>
+    <div class="ios-sync-status" data-ios-sync-status>
+      ${esc(iosFollowerStatus?.error ||
+        (iosFollowerStatus?.active ? "正在按 GM 时间表同步播放" :
+          iosFollowerStatus?.ready ? "音频已就绪，点击开启声音" :
+            "等待本地缓存完成"))}
+    </div>
+    <div class="ios-sync-hint">只有 GM 能暂停、切歌和拖动进度，此处不会改变房间播放。</div>
+  </section>`;
+}
+
 function gmView() {
   const p = S.now?.playback;
   const list = S.state?.playlist || [];
@@ -325,7 +377,8 @@ function gmView() {
     : S.upd?.hasUpdate
       ? `<div class="upd-banner"><span>发现新版本 ${esc(S.upd.latest)}</span><span class="upd-hint">${S.upd.autoUpdate ? "正在后台下载…" : "可在设置里手动更新"}</span></div>`
       : "";
-  return noticeHtml() + updTip + nowCard(true) + transport + blocked + tabs + body;
+  return noticeHtml() + updTip + nowCard(true) +
+    iosSyncButtonHtml() + transport + blocked + tabs + body;
 }
 
 /** 插件自带的确认框：OBR 的 iframe 里 window.confirm/prompt 会被静默屏蔽。 */
@@ -519,11 +572,12 @@ function playerView() {
   const canClaim = !window.BARD_CLOUD && !S.now?.owner;
   return `
   ${nowCard(false)}
-  ${S.status.blocked ? `<button class="unlock" data-act="unlock">${icon("volume")}开启声音</button>` : ""}
+  ${iosSyncButtonHtml()}
+  ${S.status.blocked && !iosAudio ? `<button class="unlock" data-act="unlock">${icon("volume")}开启声音</button>` : ""}
   ${
     canClaim
       ? `<button class="btn block" data-act="reclaim" style="margin-bottom:12px">我是主持，取得播放控制权</button>`
-      : `<div class="player-note">音乐由 GM 统一播放，你只能调节自己的音量。关闭面板也不会中断。</div>`
+      : `<div class="player-note">音乐由 GM 统一播放，你只能调节自己的音量。${iosAudio ? "iPhone 的手势解锁播放器需要暂时保留此面板；关闭后 Safari 可能会暂停声音。" : "关闭面板也不会中断。"}</div>`
   }
   <div class="field">
     <div class="label">我的音量 <span class="hint">${vol}%</span></div>
@@ -791,7 +845,13 @@ document.addEventListener("click", (ev) => {
   else if (act === "backup-export") doExportBackup();
   else if (act === "backup-import") document.getElementById("backup-file")?.click();
   else if (act === "toggle-hide") command({ type: "settings", hideTitle: !S.state?.settings?.hideTitle });
-  else if (act === "unlock") bus?.post({ t: "unlock" });
+  else if (act === "unlock" || act === "ios-enable") {
+    // 这里保持纯同步调用：Safari 必须看到在用户点击的同一执行栈
+    // 中调用真正音频元素的 play()。不通过 BroadcastChannel 转发。
+    if (window.BARD_CLOUD && iosAudio) iosFollower?.enableFromUserGesture();
+    else bus?.post({ t: "unlock" });
+    return;
+  }
   else if (act === "reclaim") claim();
   else if (act === "release") {
     askConfirm("让出控制权？其他 GM 可以接管。", null, "release");
@@ -1037,13 +1097,17 @@ async function boot() {
   resetOwlbearRetries(sessionStorage);
   S.role = role;
   S.roomId = roomId;
+  initIosFollower();
   if (window.BARD_CLOUD && roomId) {
     const cloud = await initCloudBridge(OBR, role, roomId);
     cloud.subscribe((state, now) => {
       S.state = state;
       S.now = now;
+      iosFollower?.prepare(now);
       render(true);
     });
+    // 状态可能先于文件到达；收到 OPFS 校验成功事件后再准备可播放源。
+    cloud.onFile(() => iosFollower?.prepare(S.now));
   }
   const tab = new URLSearchParams(location.search).get("tab");
   if (["list", "add", "settings"].includes(tab)) S.tab = tab;
@@ -1082,6 +1146,7 @@ function onBus(msg) {
     case "now":
       S.now = msg.now;
       if (msg.now?.serverTime) S.skew = msg.now.serverTime - Date.now();
+      iosFollower?.prepare(msg.now);
       render();
       break;
     case "state":

@@ -70,6 +70,9 @@ export function publicNow(state, now = Date.now()) {
       cover: hidden ? "" : (item.cover || ""),
       duration: item.duration || 0,
       hash: item.hash,
+      // 文件经 OPFS 存取后扩展名丢失，iOS Safari 需要原歌曲媒体类型
+      // 才能稳定识别 blob: URL。曲名隐藏时 MIME 仍是非敏感技术元数据。
+      mime: item.mime || "audio/mpeg",
       src: `cloud:${item.hash}`,
     } : null,
     // Owlbear 的房主角色决定控制权。保留非空 owner 兼容原版玩家视图，

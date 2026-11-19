@@ -26,8 +26,9 @@ const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
 manifest.name = "咕咕点歌台 · 云端版";
 manifest.author = "鸽翅、Moga";
 manifest.description = "为 Owlbear Rodeo 房间共享背景音乐与音效：GM 上传并管理歌单，玩家同步收听，支持播放暂停、切歌、进度控制、循环播放和个人音量调节。";
-// v3.3.0 整合生产版已验收的 ACK/匿名诊断与开发分支待验收的
-// 双 GM 时钟、16 KiB 房间元数据降级、本地备份和移动端播放改造。
+// v3.3.0 计划整合生产v3.2.5已经验证的媒体用户手势修复，
+// 与开发分支的全局时间表、闭环纠偏、GM升权、16KB降级、备份功能。
+// 仍需真机iPhone长期播放验收，不应把单元测试等同于声学同步结果。
 manifest.version = "3.3.0";
 
 // 真正的 Owlbear 房间安装时还发现：宿主对相对路径 ./icon.png 的解析

@@ -80,6 +80,14 @@ function mediaStatus(m) {
     networkState: finite(m.networkState),
     mediaErrorCode: finite(m.errorCode),
     playError: short(m.errorName, 40),
+    // 报告格式支持情况，便于区分「确实不支持格式」与「用户手势未授权」。
+    // 不复制 blob URL、音频内容或任何完整歌曲标识。
+    sourceType: /^audio\/[a-z0-9+.-]+$/i.test(m.source?.mime || "")
+      ? m.source.mime : null,
+    cachedFileType: /^audio\/[a-z0-9+.-]+$/i.test(m.source?.storedMime || "")
+      ? m.source.storedMime : null,
+    browserCanPlay: ["probably", "maybe"].includes(m.source?.canPlayType)
+      ? m.source.canPlayType : "no-or-unknown",
     blocked: Boolean(m.blocked),
     buffering: Boolean(m.buffering),
     playbackRate: finite(m.rate),
@@ -105,7 +113,8 @@ function serverStatus(server) {
 }
 
 function environment(ua = "") {
-  const name = /Firefox\//.test(ua) ? "Firefox" :
+  const name = /QQ\//.test(ua) || /MQQBrowser/.test(ua) ? "QQ 内置浏览器" :
+    /Firefox\//.test(ua) ? "Firefox" :
     /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" :
       /Safari\//.test(ua) ? "Safari" : "其他浏览器";
   const os = /Android/i.test(ua) ? "Android" : /iPhone|iPad|iPod/i.test(ua) ?
@@ -151,6 +160,23 @@ export function makeDiagnosticReport(source) {
         calibrationAgeMs: finite(engine.clock.calibrationAgeMs),
       } : null,
     },
+    // iOS 真正输出声音的前台 iframe 与后台 iframe 可能不同。
+    // 报告必须区分「后台 autoplay 被拒」与「受 GM 控制的前台已在播放」。
+    iosSynchronizedPlayback: p.iosSynchronizedPlayback ? {
+      ready: Boolean(p.iosSynchronizedPlayback.ready),
+      active: Boolean(p.iosSynchronizedPlayback.active),
+      authorized: Boolean(p.iosSynchronizedPlayback.authorized),
+      loading: Boolean(p.iosSynchronizedPlayback.loading),
+      playingInRoom: Boolean(p.iosSynchronizedPlayback.playingInRoom),
+      paused: Boolean(p.iosSynchronizedPlayback.paused),
+      currentTime: finite(p.iosSynchronizedPlayback.currentTime),
+      expected: finite(p.iosSynchronizedPlayback.expected),
+      driftMs: finite(p.iosSynchronizedPlayback.driftMs),
+      error: /^[A-Za-z]{3,40}Error$/.test(p.iosSynchronizedPlayback.error || "")
+        ? p.iosSynchronizedPlayback.error : p.iosSynchronizedPlayback.error ? "LocalAudioError" : null,
+      mediaErrorCode: finite(p.iosSynchronizedPlayback.mediaError),
+      hasNativeScrub: Boolean(p.iosSynchronizedPlayback.hasNativeScrub),
+    } : null,
     relayInAudioEngine: relayStatus(engine.relay),
     relayInPanel: relayStatus(p.panelRelay),
     relayAtCloudflare: serverStatus(p.server),

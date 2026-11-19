@@ -4,6 +4,7 @@
 // 若 OBR 没加载后台页，浮窗会自己拉起一份（self-heal），后台上线后自动让位。
 import { apiBase, apiGet, apiPost, lsGet, lsSet, lsDel, tokenKey, createBus, tabId, report } from "./lib.js";
 import { initCloudBridge } from "./cloud/bridge.js";
+import { playableAudioSource } from "./cloud/audio-source.js";
 import { getAudio } from "./cloud/storage.js";
 import {
   shouldSnapOnCloudUpdate, initialCloudSeek, cloudPhaseDifference,
@@ -53,6 +54,8 @@ export class Engine {
     // 普通玩家点「生成诊断」时才从后台引擎读出这些状态。
     this.mediaEvents = [];
     this.lastPlayError = null;
+    this.lastMediaSource = null;
+    this.suppressedByForeground = false;
     this.recordMedia = (type, detail = {}) => {
       this.mediaEvents.push({ at: new Date().toISOString(), type, ...detail });
       if (this.mediaEvents.length > 25) this.mediaEvents.shift();
@@ -584,12 +587,21 @@ export class Engine {
         this.audio.pause();
         this.audio.removeAttribute("src");
         this.audio.load();
-        getAudio(track.hash).then((file) => {
+        getAudio(track.hash).then(async (file) => {
           if (this.stopped || this.src !== track.src) return;
           if (!file) {
             this.src = ""; // 缺文件先保持静音，待中继完成后重试
             return;
           }
+          // 还原 OPFS 无后缀音频的 MIME，保证预热音频与主播放器
+          // 使用同一种可以被 WebKit 识别的 Blob URL 类型。
+          const source = await playableAudioSource(file, track.mime);
+          if (this.stopped || this.src !== track.src) return;
+          this.lastMediaSource = {
+            mime: source.mime, storedMime: source.storedMime,
+            declaredMime: source.declaredMime, detectedMime: source.detectedMime,
+            canPlayType: source.codecSupported,
+          };
           // 如果这首就是预热过的下一首，复用其 Blob URL，省去一次
           // 静态资源定位。预热不能保证所有浏览器完全无缝解码；
           // 在 Safari 上 preload 只是提示，仍要保留缓冲和错误兜底。
@@ -603,7 +615,7 @@ export class Engine {
             this.warmup = null;
             this.warmupHash = "";
           } else {
-            this.cloudBlobUrl = URL.createObjectURL(file);
+            this.cloudBlobUrl = URL.createObjectURL(source.blob);
             this.releaseWarmup();
           }
           this.audio.src = this.cloudBlobUrl;
@@ -727,6 +739,7 @@ export class Engine {
   }
 
   play() {
+    if (window.BARD_CLOUD && this.suppressedByForeground) return;
     if (!this.audio.paused) return;
     const wasBlocked = this.blocked;
     this.audio
@@ -1004,7 +1017,9 @@ export class Engine {
         hasToken: Boolean(this.token),
         claimError: this.claimError,
         volume: this.localVolume,
-        error: this.audio.error ? `音频加载失败（${this.audio.error.code}）` : "",
+        error: this.audio.error?.code === 4
+          ? "浏览器无法解码当前歌曲或媒体类型缺失（错误4）；可尝试MP3/M4A"
+          : this.audio.error ? `音频加载失败（${this.audio.error.code}）` : "",
       },
     });
   }
@@ -1036,6 +1051,7 @@ export class Engine {
         blocked: this.blocked,
         buffering: Boolean(this.buffering),
         rate: audio.playbackRate,
+        source: this.lastMediaSource,
       },
       mediaEvents: this.mediaEvents.slice(-20),
       clock: {
@@ -1054,6 +1070,20 @@ export class Engine {
   onBus(msg) {
     if (!msg || this.stopped) return;
     switch (msg.t) {
+      case "foreground-playback-on":
+        // 接受前台同一 iframe 的真实用户手势后才停后台。
+        // 浮窗 fallback Engine 也应让位，避免产生两路同步音乐重音。
+        if (window.BARD_CLOUD) {
+          this.suppressedByForeground = true;
+          this.audio.pause();
+        }
+        break;
+      case "foreground-playback-off":
+        if (window.BARD_CLOUD) {
+          this.suppressedByForeground = false;
+          if (this.now?.playback?.playing) this.play();
+        }
+        break;
       case "diagnostics-request":
         this.bus.post({
           t: "diagnostics-response",
