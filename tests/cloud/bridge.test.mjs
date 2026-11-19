@@ -52,6 +52,10 @@ test("GM 控制歌单通过 OBR Metadata 传播，玩家无权修改，无播放
   try {
     await gm.start();
     await player.start();
+    // v2 懒初始化：最初仅看见插件不应向别人的房间无意义写入状态。
+    assert.equal(gm.state, null);
+    await gm.ensureRoomState();
+    await player.refresh();
     assert.equal(gm.state.secret.length, 32);
     assert.equal(player.state.secret, gm.state.secret);
     assert.equal(gm.relay.url(), player.relay.url());
@@ -79,6 +83,83 @@ test("GM 控制歌单通过 OBR Metadata 传播，玩家无权修改，无播放
   } finally {
     gm.relay?.close();
     player.relay?.close();
+  }
+});
+
+test("GM 从 PLAYER 升权后，接近16KB的复杂房间仍能创建分类与上传曲目", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.location = new URL("https://music.zjhstudio.com/");
+  globalThis.WebSocket = FakeWebSocket;
+  const files = new Map();
+  const key = "com.other-extension/large-shared-settings";
+  const roomMetadata = { [key]: "X".repeat(15700) };
+  const callbacks = [];
+  const changed = [];
+  let role = "PLAYER";
+  const host = {
+    room: {
+      id: "many-extensions-room",
+      getMetadata: async () => structuredClone(roomMetadata),
+      setMetadata: async (data) => {
+        Object.assign(roomMetadata, structuredClone(data));
+        assert.ok(new TextEncoder().encode(JSON.stringify(roomMetadata)).length < 16 * 1024,
+          "必须遵守 Owlbear 整个房间 16KB 共享上限");
+        callbacks.forEach((cb) => cb(structuredClone(roomMetadata)));
+      },
+      onMetadataChange: (cb) => callbacks.push(cb),
+    },
+    player: {
+      getRole: async () => role,
+      onChange: (cb) => changed.push(cb),
+    },
+    broadcast: { onMessage: () => {}, sendMessage: async () => {} },
+  };
+  globalThis.fetch = async (url, options = {}) => {
+    const uri = new URL(url, globalThis.location);
+    assert.equal(uri.pathname, "/room-state");
+    const hash = uri.searchParams.get("hash");
+    if (options.method === "POST") {
+      files.set(hash, options.body);
+      return new Response(null, { status: 204 });
+    }
+    const data = files.get(hash);
+    return data ? new Response(data, { status: 200 }) :
+      new Response("Not found", { status: 404 });
+  };
+  const gm = new CloudBridge(host, host.room.id);
+  const player = new CloudBridge({
+    ...host,
+    player: { ...host.player, getRole: async () => "PLAYER" },
+  }, host.room.id);
+  try {
+    await gm.start();
+    await player.start();
+    assert.equal(gm.state, null, "PLAYER 进入房间时不会错误创建歌单");
+    role = "GM";
+    changed.forEach((cb) => cb({ role }));
+    // 创建分类：第一次写操作应该自动初始化；而不是报「房间歌单未创建」。
+    await gm.apiPost("/api/rooms/test/command",
+      { type: "folder", op: "create", name: "莱德斯" });
+    assert.ok(gm.state.folders.includes("莱德斯"));
+    assert.equal(roomMetadata[key], "X".repeat(15700), "不允许破坏其他扩展的原始数据");
+    assert.equal(roomMetadata["com.zjhstudio.gugu-cloud/state"].v, 2);
+    assert.ok(files.size >= 2, "DO 快照应存入空歌单和创建分类后的状态");
+    await gm.change((s) => ({
+      ...s, rev: s.rev + 1, playlist: [
+        ...s.playlist, { id: "first-song", hash: "f".repeat(64),
+          title: "由GM上传的曲目", size: 200_000, duration: 12.4 },
+      ],
+    }));
+    await player.refresh();
+    assert.equal(player.state.playlist.length, 1);
+    assert.equal(player.state.folders.includes("莱德斯"), true);
+    assert.ok(new TextEncoder().encode(JSON.stringify(roomMetadata)).length < 16 * 1024);
+  } finally {
+    gm.relay?.close();
+    player.relay?.close();
+    clearInterval(gm.clockMaintenance);
+    clearInterval(player.clockMaintenance);
+    globalThis.fetch = originalFetch;
   }
 });
 
