@@ -129,6 +129,10 @@ export function applyCommand(state, cmd, now = Date.now()) {
     case "next": step(1); break;
     case "prev": step(-1); break;
     case "ended":
+      // GM 后台可能先由媒体事件、后由本地时钟各报告一次结束。
+      // 仅处理与当前播放序列一致的结束事件，避免延迟命令跳过新歌。
+      if (cmd.expectedSeq !== undefined && cmd.expectedSeq !== p.seq) return s;
+      if (!p.playing) return s;
       if (p.loop === "track") { p.position = 0; p.playing = true; bump(); }
       else step(1, true);
       break;

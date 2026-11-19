@@ -65,6 +65,10 @@ export class Engine {
     this.fade = 1;
     this.localVolume = clamp(Number(lsGet("bard:vol", 0.85)));
     this.reportedFor = "";
+    // 云版自动切歌需要同时防止：音频 ended 事件与播放时钟达到曲长时
+    // 各触发一次；以及浏览器后台音频被禁播时完全收不到 ended 事件。
+    // 按播放序列号去重，下一首/下一轮会产生新的 seq，允许再切换。
+    this.lastEndedSeq = null;
     this.polling = false;
     this.settleUntil = 0;
     this.pollTimer = null;
@@ -633,6 +637,16 @@ export class Engine {
   onEnded() {
     if (this.role !== "GM" || !this.token) return;
     if (!window.BARD_CLOUD && Number(this.now?.track?.duration || 0) > 0) return; // 原版 Node 会自动切歌
+    if (window.BARD_CLOUD) {
+      const playback = this.now?.playback;
+      if (!playback?.playing || !playback?.trackId) return;
+      if (this.lastEndedSeq === playback.seq) return;
+      this.lastEndedSeq = playback.seq;
+      // 同时携带发生结束时的 seq；即便 GM 另一窗口或用户先手动切歌，
+      // 元数据提交前也会重新核对它，不能把下一首重复跳过。
+      this.command({ type: "ended", expectedSeq: playback.seq });
+      return;
+    }
     this.command({ type: "ended" });
   }
 
@@ -719,6 +733,14 @@ export class Engine {
 
   tick() {
     if (this.stopped) return;
+    // 不能只依赖 HTMLAudioElement 的 ended 事件：后台 iframe 被浏览器禁止
+    // 自动播放、系统挂起或设备没有声音输出时，音频可能根本没开始播放，
+    // 但房间共享的播放时间锚点仍在推进，玩家会看到 2:57 / 0:20 一类越界。
+    // 复用既有 500ms 本地 tick，以 GM 时钟到达曲长作为结束的第二信号，
+    // 不增加任何 Owlbear/DO 的周期网络请求，也不让玩家擅自切歌。
+    if (window.BARD_CLOUD && this.role === "GM" && this.token &&
+        this.now?.playback?.playing && Number(this.now?.track?.duration) > 0 &&
+        this.target() >= this.now.track.duration) this.onEnded();
     if (this.now?.playback?.playing) this.correctDrift();
     this.bus.post({ t: "tick", time: this.audio.currentTime || 0, playing: !this.audio.paused });
   }

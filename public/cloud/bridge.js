@@ -168,7 +168,13 @@ export class CloudBridge {
       if (!await this.isGM()) throw new Error("需要 Owlbear 房主权限");
       await this.refresh();
       if (!this.state) throw new Error("房间歌单尚未创建");
-      return this.commit(await transform(this.state));
+      const next = await transform(this.state);
+      // 过期的 ended(expectedSeq) 应当是纯空操作，不要为同一修订
+      // 重复写 Owlbear Metadata 和 Broadcast，尤其不能打断玩家进度。
+      if (next.rev === this.state.rev) {
+        return { state: this.getState(), now: this.getNow() };
+      }
+      return this.commit(next);
     });
     this.writeChain = result.catch(() => {});
     return result;

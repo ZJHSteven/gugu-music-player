@@ -27,6 +27,7 @@
 - 本机 Windows 网络配置下 Node 24 直接 fetch 生产域名出现 ConnectTimeoutError，单独启动的 PowerShell 子进程也超时；只有 DevSpace 的当前 PowerShell 或日常 CDP Chrome 已实测能访问。为了避免伪验收，`npm run verify:cloud` 改为纯离线检查清单、CORS 规则和文件存在性；`npm run verify:cloud:online` 才是实际远端 HTTP/CORS 验证，使用有外网访问能力的环境运行。
 - 本轮阶段验收：`npm run build:cloud` + `npm run verify:cloud` + `npm run test:cloud` 全通过；真实 Owlbear 页面通过跨源 `fetch` 验证公网清单 200、v3.2.1、四个 HTTPS 绝对 URL；账户自定义扩展安装资产已核实。当前 Owlbear 房间启用记录不存在该资产；真实房间 SDK E2E 阶段仍标记 blocked，而不是假定已经通过。
 - 2026-11-19 已通过 Owlbear 官方 Profile → Edit Room 界面给 The Cured Tying 启用咕咕云版，并从真实 GM 房间确认 / 和 /background.html 两个 Owlbear iframe 已加载；SDK getRole=GM，房间 Metadata 中已有咕咕 state，DO WebSocket 已联通。发现另一个真实 E2E 问题：popover iframe 的 `document.hidden=true`，`requestAnimationFrame` 被浏览器暂停，导致 UI 永远显示「正在连接…」，尽管 SDK 已就绪。已增加隐藏页的单次 `setTimeout` 渲染兜底，待回归部署。
+- 真实 Owlbear GM + 独立无账号访客端成功同房间：用户 Profile 编辑启用、玩家请求加入及 GM ADMIT 完整走通。GM 上传 20s/8000Hz 单声道 WAV（320044B），Player popover 与后台都经公网 DO 中继获取并校验 SHA-256，收到了 OBR Metadata rev 2 和 changed 广播。GM 选择播放使真实双方 rev 3；Chrome 锁屏背景 GM `Audio.play()` 因缺少用户手势被拒绝，玩家播放 pending，然而房间计时超过 20s 后仍显示 2:57/0:20：确认为云版音频 ended 事件依赖的自动切歌问题。已加本地时钟兜底、GM seq 去重及 stale ended 拒绝，待构建回归与正式环境验证。
 
 1. 真实 Owlbear 房间内核对 GM/玩家加入、切歌、自动播放限制、移动端后台与断线恢复。
 2. 进行公网 30 MiB 大文件长时间下载验收，区分本地快与公网慢的瓶颈；并为超时重试添加客户端可见进度。

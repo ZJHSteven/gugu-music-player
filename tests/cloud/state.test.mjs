@@ -73,6 +73,28 @@ test("修改设置不应导致歌曲进度跳回起点", () => {
   assert.equal(state.playback.volume, 0.5);
 });
 
+test("自动结束携带播放序列号：延迟或重复的 ended 绝不跳过新歌", () => {
+  let s = twoTracks();
+  s = applyCommand(s, { type: "select", trackId: s.playlist[0].id });
+  const initialSeq = s.playback.seq;
+  s = applyCommand(s, { type: "ended", expectedSeq: initialSeq });
+  assert.equal(s.playback.trackId, s.playlist[1].id);
+  assert.equal(s.playback.playing, true);
+  const afterFirst = s.rev;
+  const nextSeq = s.playback.seq;
+  // 同一首旧歌的后续结束通知到达时，当前播放状态不能改变。
+  s = applyCommand(s, { type: "ended", expectedSeq: initialSeq });
+  assert.equal(s.rev, afterFirst);
+  assert.equal(s.playback.seq, nextSeq);
+  assert.equal(s.playback.trackId, s.playlist[1].id);
+  // 手工暂停后再来的 ended 即使序列匹配也不能重新开始。
+  s = applyCommand(s, { type: "pause" });
+  const pausedRev = s.rev;
+  s = applyCommand(s, { type: "ended", expectedSeq: s.playback.seq });
+  assert.equal(s.rev, pausedRev);
+  assert.equal(s.playback.playing, false);
+});
+
 test("隐私设置、分类管理及非法操作", () => {
   let s = twoTracks();
   s = applyCommand(s, { type: "settings", hideTitle: true });
