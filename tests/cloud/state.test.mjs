@@ -140,11 +140,18 @@ test("隐私设置、分类管理及非法操作", () => {
   assert.throws(() => applyCommand(s, { type: "select", trackId: "missing" }), /曲目不存在/);
 });
 
-test("歌单超过 Owlbear Metadata 安全阈值时明确拒绝", () => {
+test("原生Metadata使用14KiB限制，容量不足后DO快照允许增长到60KiB", () => {
   let s = createState(secret);
+  assert.ok(assertMetadataSize(s) < 14 * 1024);
+  for (let i = 0; i < 120; i++) {
+    s = addTrack(s, { title: "歌单条目", hash: HASH_A, size: 1000 });
+  }
+  assert.equal(s.playlist.length, 120, "较大的歌单不应在14KiB被状态机提前拒绝");
+  assert.throws(() => assertMetadataSize(s), /16 KB 上限/);
+  // 大型歌单最终仍必须尊重不可变快照的60KiB硬上限。
   assert.throws(() => {
     for (let i = 0; i < 300; i++) s = addTrack(s, {
       title: "一首很长的歌曲标题".repeat(5), hash: HASH_A, size: 1000,
     });
-  }, /16 KB 上限/);
+  }, /60 KiB 上限/);
 });
