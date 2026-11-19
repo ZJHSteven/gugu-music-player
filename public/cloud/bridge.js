@@ -17,6 +17,10 @@ import {
 } from "./state.js";
 import { digest, getAudio, putAudio, requestPersistence } from "./storage.js";
 import { createBackupArchive, readBackupArchive } from "./backup.js";
+import {
+  ROOM_METADATA_LIMIT, ROOM_SNAPSHOT_THRESHOLD,
+  encodedSize, isSnapshotPointer, saveRoomSnapshot, loadRoomSnapshot,
+} from "./room-snapshots.js";
 import { RelayClient } from "./relay-client.js";
 import { MAX_AUDIO_SIZE } from "./wire.js";
 
@@ -58,6 +62,8 @@ export class CloudBridge {
     this.clockSource = "";
     this.lastCalibrationAt = 0;
     this.initialized = false;
+    this.snapshotPointer = null;
+    this.initializingState = null;
   }
 
   async isGM() {
@@ -68,7 +74,16 @@ export class CloudBridge {
     if (this.initialized) return this;
     this.initialized = true;
     this.OBR.room.onMetadataChange((metadata) => {
-      this.receiveState(normalizeState(metadata?.[METADATA_KEY]));
+      this.receiveMetadata(metadata).catch((error) => {
+        console.warn("[gugu-cloud] 读取房间歌单失败", error);
+      });
+    });
+    // Owlbear 可以在页面已经启动以后把 PLAYER 提升成 GM。
+    // 旧实现只在 start() 时查一次角色，导致提升权限后上传和建分类均显示
+    //「房间歌单未创建」。监听角色事件，但只在 GM 首次执行写操作时初始化，
+    // 避免同一设备的 popover/background 两个 iframe 同时竞态初始化。
+    this.OBR.player.onChange?.((player) => {
+      if (player.role === "GM" && !this.state) this.emit();
     });
     this.OBR.broadcast.onMessage(BROADCAST_CHANNEL, (event) => {
       const data = event.data;
@@ -102,12 +117,9 @@ export class CloudBridge {
       }
     });
     await this.refresh();
-    // 未创建音乐房间时，GM 初始化一次。其后非 GM 仅监听 OBR 元数据变化。
-    if (!this.state && await this.isGM()) {
-      const latest = normalizeState((await this.OBR.room.getMetadata())?.[METADATA_KEY]);
-      if (latest) this.receiveState(latest);
-      else await this.commit(createState(randomSecret()));
-    }
+    // 房间初始化改为惰性：GM 首次上传、创建分类或领取控制权时进行。
+    // 这样空房间的两个 iframe 不会争抢不同随机 secret，也不会在用户
+    // 仅仅查看别人的房间时，无意消耗其公共 Metadata 配额。
     // 所有角色都需要校准，包括「同一 GM 账号在两台设备上」的情况。
     // 不发送周期 DO 心跳；播放期间每 5 分钟向当前时钟源校准一次即可。
     this.calibrateClock().catch(console.warn);
@@ -188,9 +200,36 @@ export class CloudBridge {
     this.emit();
   }
 
+  /**
+   * 支持两种正交的 Owlbear 元数据格式：
+   * v1 = 直接放完整歌单（旧房间无需迁移）；
+   * v2 = 仅存本房间的不可变快照 SHA256 指针（复杂房间）。
+   *
+   * 下载快照可能因网络异步完成。后到的旧版 rev 不能覆盖较新 rev。
+   */
+  async receiveMetadata(metadata) {
+    const value = metadata?.[METADATA_KEY];
+    if (isSnapshotPointer(value)) {
+      if (this.state?.rev > value.rev) return;
+      if (this.snapshotPointer?.hash === value.hash &&
+          this.state?.rev === value.rev) return;
+      const state = normalizeState(await loadRoomSnapshot(this.roomId, value));
+      if (!state || state.rev !== value.rev || state.secret !== value.secret) {
+        throw new Error("房间歌单快照格式不正确或摘要不匹配");
+      }
+      if (this.state?.rev > state.rev) return;
+      this.snapshotPointer = value;
+      await this.receiveState(state);
+      return;
+    }
+    const state = normalizeState(value);
+    if (state) this.snapshotPointer = null;
+    await this.receiveState(state);
+  }
+
   async refresh() {
     const data = await this.OBR.room.getMetadata();
-    await this.receiveState(normalizeState(data?.[METADATA_KEY]));
+    await this.receiveMetadata(data);
   }
 
   getState() {
@@ -208,7 +247,26 @@ export class CloudBridge {
   async commit(next) {
     if (!await this.isGM()) throw new Error("只有 Owlbear 房主能修改歌单和播放状态");
     assertMetadataSize(next);
-    await this.OBR.room.setMetadata({ [METADATA_KEY]: next });
+    const metadata = await this.OBR.room.getMetadata();
+    const totalBytes = encodedSize({ ...metadata, [METADATA_KEY]: next });
+    // 一旦迁移到 v2 就保持指针格式，不要因其他插件减少数据量来回振荡。
+    const usePointer = Boolean(this.snapshotPointer) ||
+      totalBytes > ROOM_SNAPSHOT_THRESHOLD;
+    if (usePointer) {
+      const pointer = await saveRoomSnapshot(this.roomId, next.secret, next);
+      // DO 快照先写好，之后才能通过 Owlbear GM 授权更新其指针。
+      // 绝不删除或覆盖其他扩展的任意 Metadata 键。
+      const pointerBytes = encodedSize({ ...metadata, [METADATA_KEY]: pointer });
+      if (pointerBytes > ROOM_METADATA_LIMIT) {
+        throw new Error(
+          `房间扩展共享元数据已占用 ${encodedSize(metadata)} 字节，剩余空间连咕咕的最小歌单指针也放不下。请房主清理其他扩展的多余数据。`
+        );
+      }
+      await this.OBR.room.setMetadata({ [METADATA_KEY]: pointer });
+      this.snapshotPointer = pointer;
+    } else {
+      await this.OBR.room.setMetadata({ [METADATA_KEY]: next });
+    }
     await this.receiveState(next);
     // Metadata 自带持久同步，Broadcast 只用于催促其他玩家立即更新。
     this.OBR.broadcast.sendMessage(BROADCAST_CHANNEL, { t: "changed", rev: next.rev }).catch(console.warn);
@@ -223,7 +281,10 @@ export class CloudBridge {
     const result = this.writeChain.then(async () => {
       if (!await this.isGM()) throw new Error("需要 Owlbear 房主权限");
       await this.refresh();
-      if (!this.state) throw new Error("房间歌单尚未创建");
+      // 在刚获 GM 权限的房间，第一次写入同时完成空歌单初始化。
+      // 不让任何「播放/上传/建分类」先于 v2 初始化，从而消灭只在初次
+      // 载入页面时才判断角色的历史竞态。
+      if (!this.state) await this.ensureRoomState();
       // 修改指令中的 Date.now() 必须先换算成当前播放源的时钟，否则同一个
       // GM 账号在手机上暂停/播放时，会把手机的绝对时间写到电脑锚点里。
       const offset = this.skew;
@@ -257,7 +318,7 @@ export class CloudBridge {
   async apiPost(path, body) {
     if (/\/claim$/.test(path)) {
       if (!await this.isGM()) throw new Error("只有 Owlbear 房主可以获得控制权");
-      if (!this.state) await this.commit(createState(randomSecret()));
+      if (!this.state) await this.ensureRoomState();
       return { token: "cloud-gm" };
     }
     if (/\/heartbeat$/.test(path)) return {};
@@ -267,6 +328,18 @@ export class CloudBridge {
       throw new Error("云版暂未支持原版需要 Node 抓取的 B 站歌曲；请先上传本地音频文件");
     }
     throw new Error(`云版不支持的操作接口：${path}`);
+  }
+
+  async ensureRoomState() {
+    if (this.state) return;
+    if (!await this.isGM()) throw new Error("需要 Owlbear 房主权限");
+    if (!this.initializingState) {
+      this.initializingState = (async () => {
+        await this.refresh();
+        if (!this.state) await this.commit(createState(randomSecret()));
+      })().finally(() => { this.initializingState = null; });
+    }
+    return this.initializingState;
   }
 
   async uploadTrack({ file, duration, folder, onProgress }) {
