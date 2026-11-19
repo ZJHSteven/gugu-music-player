@@ -142,6 +142,7 @@ export class IosSyncAudio {
       active: this.active,
       authorized: this.authorized,
       armed: this.armed,
+      priming: this.priming,
       waitingForFile: !this.ready && Boolean(this.getNow()?.track),
       loading: this.loading,
       playingInRoom: Boolean(p?.playing),

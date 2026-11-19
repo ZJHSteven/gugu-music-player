@@ -81,11 +81,14 @@ function initIosFollower() {
       iosFollowerStatus = status;
       const label = document.querySelector("[data-ios-sync-status]");
       if (label) label.textContent = status.error ||
-        (!status.playingInRoom ? "GM 当前已暂停，本机跟随暂停" :
-          status.active ? `与 GM 同步中，偏差约 ${status.driftMs} ms` :
-          status.loading ? "正在准备同步音频…" :
-            status.ready ? "音频已缓存；点下方按钮开启同步声音" :
-              "正在等待完整音频缓存");
+        (status.active ? `与 GM 同步中，偏差约 ${status.driftMs} ms` :
+          status.priming ? "正在接受 Safari 声音授权…" :
+            status.armed ? "声音权限已开启；等歌曲缓存完成后自动同步播放" :
+              status.loading ? "正在准备音频；现在就可以先点击开启声音" :
+                status.waitingForFile ? "正在等待房主音频到达；可先点击开启声音" :
+                  !status.playingInRoom ? "GM 当前已暂停；仍可提前开启声音" :
+                    status.ready ? "音频已缓存；点击开启并同步播放" :
+                      "可先点击开启声音，歌曲到达后自动跟随房间");
     },
     onActive: (active) => {
       bus?.post({ t: active ? "foreground-playback-on" : "foreground-playback-off" });
@@ -134,7 +137,7 @@ function render(force) {
       connected: S.status.connected,
       hasToken: S.status.hasToken,
       hide: S.state?.settings?.hideTitle,
-      err: S.status.error,
+      err: iosAudio ? null : S.status.error,
       owner: Boolean(S.now?.owner),
       loop: S.now?.playback?.loop,
       volume: S.now?.playback?.volume,
@@ -1038,7 +1041,7 @@ async function boot() {
       render();
     });
     // 状态可能先于文件到达；收到 OPFS 校验成功事件后再准备可播放源。
-    cloud.onFile(() => iosFollower?.prepare(S.now));
+    cloud.onFile(() => iosFollower?.prepare(S.now, { force: true }));
   }
   const tab = new URLSearchParams(location.search).get("tab");
   if (["list", "add", "settings"].includes(tab)) S.tab = tab;
