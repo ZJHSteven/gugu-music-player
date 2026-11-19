@@ -24,8 +24,9 @@ await fs.writeFile(path.join(destination, "config.js"),
 const manifestPath = path.join(destination, "manifest.json");
 const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
 manifest.name = "咕咕点歌台 · 云端版";
-manifest.description = "咕咕点歌台云端版：OPFS 本地曲库、DO 按需文件共享、Owlbear 房间播放同步。";
-manifest.version = "3.2.1";
+manifest.author = "鸽翅、Moga";
+manifest.description = "为 Owlbear Rodeo 房间共享背景音乐与音效：GM 上传并管理歌单，玩家同步收听，支持播放暂停、切歌、进度控制、循环播放和个人音量调节。";
+manifest.version = "3.2.2";
 
 // 真正的 Owlbear 房间安装时还发现：宿主对相对路径 ./icon.png 的解析
 // 偶尔变成 https://music.zjhstudio.com./icon.png（主机名末尾多出一个点）。

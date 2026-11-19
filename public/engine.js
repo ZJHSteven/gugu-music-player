@@ -5,6 +5,7 @@
 import { apiBase, apiGet, apiPost, lsGet, lsSet, lsDel, tokenKey, createBus, tabId, report } from "./lib.js";
 import { initCloudBridge } from "./cloud/bridge.js";
 import { getAudio } from "./cloud/storage.js";
+import { shouldSnapOnCloudUpdate, initialCloudSeek } from "./cloud/sync-policy.js";
 
 // 同步策略（三层，由轻到重）：
 //   1. 偏差 < DEADBAND      → 不动
@@ -395,11 +396,20 @@ export class Engine {
 
   onNow(now) {
     if (!now || this.stopped) return;
+    const previous = this.now?.playback;
+    const previousTarget = this.target();
     const prevSeq = this.now?.playback?.seq;
     this.now = now;
     // seq 变了 = 有人真的点了播放/暂停/切歌/拖进度，这时不该被冷却挡住
     if (now.playback?.seq !== prevSeq) this.lastSeekAt = 0;
     this.applyPlayback(true);
+    // Owlbear 的新 Metadata 有时仅仅改变音量或可见性。云版不能因为
+    // 这些变更或正常的时钟漂移就重置音频位置；只在显式播放时间轴变化
+    //（播放/暂停/拖进度/循环换轮）时执行一次校准。
+    if (window.BARD_CLOUD &&
+        shouldSnapOnCloudUpdate(previous, now.playback, previousTarget, this.target())) {
+      this.snap();
+    }
     this.bus.post({ t: "now", now });
   }
 
@@ -414,7 +424,10 @@ export class Engine {
       this.pendingSeek = null;
       if (Number.isFinite(seek)) {
         try {
-          this.audio.currentTime = Math.max(0, seek);
+          this.audio.currentTime = window.BARD_CLOUD
+            ? initialCloudSeek(seek, this.now?.track?.duration, this.now?.playback?.loop,
+              this.now?.playback?.playing)
+            : Math.max(0, seek);
         } catch {}
       }
       this.settleUntil = Date.now() + 5000; // 开头 5 秒先不纠偏，等缓冲稳住
@@ -500,6 +513,11 @@ export class Engine {
     if (!p) return;
     if (!track?.src) return this.halt();
 
+    // 单曲循环由各设备的音频解码器直接无缝循环，而不是每过十几秒都
+    // 等 Owlbear Metadata 回来后停播再启动。GM 仍通过时钟更新房间 seq，
+    // 而同曲的循环边界不会迫使其他客户端反复执行 play()。
+    this.audio.loop = Boolean(window.BARD_CLOUD && p.loop === "track");
+
     if (window.BARD_CLOUD && track.src.startsWith("cloud:")) {
       // Blob URL 由每名玩家本地 OPFS/IndexedDB 生成。DO 不返回歌曲 URL，
       // 浏览器也不会尝试向 Worker 请求 /audio/...。
@@ -555,6 +573,13 @@ export class Engine {
   }
 
   correctDrift() {
+    if (window.BARD_CLOUD) {
+      // 网页音频的连续性优先于毫秒级同步。尤其在 iOS Safari 上，
+      // 以 ±6% 变速追钟会导致明显的变调，周期性硬 seek 会中断声音。
+      // 云版只由 onNow() 对真实播放指令做一次跳转，其余时间保持 1.0x。
+      // 同时不再对缓冲中、正在 seek 的媒体施加任何追赶动作。
+      return this.resetRate();
+    }
     if (!this.now?.playback?.playing || this.audio.readyState < 1) return this.resetRate();
     // 正在卡顿/刚卡完：这时候 seek 只会丢掉缓冲区，越纠越卡，先什么都别做
     if (Date.now() - (this.lastWaitingAt || 0) < 5000) return this.resetRate();
