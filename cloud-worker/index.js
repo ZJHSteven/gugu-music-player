@@ -27,6 +27,29 @@ function validHashes(list) {
 export class RoomRelay extends DurableObject {
   /** 这是唯一的 DO HTTP 调用：WebSocket upgrade。 */
   async fetch(request) {
+    // 显式请求才生成的临时诊断快照：不上传音频、不保存用户身份，
+    // 不产生周期轮询。访问者必须已经拥有此房间的临时中继 secret。
+    if (new URL(request.url).pathname === "/relay-diagnostics") {
+      const clients = this.peers().map(({ info }) => ({
+        // 连接号与播放器界面显示一致，可让用户说“我的是 A1B2...”。
+        // 不提供 Owlbear 玩家姓名、账号、IP 或房间密钥。
+        peer: (info.peer || "").slice(0, 12),
+        connectedAt: info.connectedAt || null,
+        lastSeenAt: info.lastSeenAt || null,
+        hasFiles: info.hashes?.length || 0,
+        needCount: info.needCount || 0,
+        needHash: info.needHash || null,
+        sentBytes: info.sentBytes || 0,
+        forwardedBytes: info.forwardedBytes || 0,
+        verifiedCount: info.verifiedCount || 0,
+        verifiedHash: info.verifiedHash || null,
+        verifiedAt: info.verifiedAt || null,
+      }));
+      return Response.json({ version: 1, generatedAt: Date.now(),
+        connections: clients.length, clients }, {
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response("WebSocket required", { status: 426 });
     }
@@ -36,7 +59,10 @@ export class RoomRelay extends DurableObject {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ peer: crypto.randomUUID(), hashes: [] });
+    server.serializeAttachment({
+      peer: crypto.randomUUID(), hashes: [], connectedAt: Date.now(),
+      needCount: 0, sentBytes: 0, forwardedBytes: 0, verifiedCount: 0,
+    });
     server.send(JSON.stringify({ t: "welcome", peer: server.deserializeAttachment().peer }));
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -60,7 +86,17 @@ export class RoomRelay extends DurableObject {
         if (!me.hashes?.includes(header.hash) ||
             header.to === me.peer || header.from !== me.peer) return;
         const peer = this.peers().find((p) => p.info.peer === header.to);
-        if (peer) peer.ws.send(message);
+        if (peer) {
+          peer.ws.send(message);
+          // Hibernation attachment 保存每条连接的临时统计，不是 DO 持久化
+          // 文件，也不是按块写数据库。这里只累计经过 DO 的有效字节。
+          const bytes = message.byteLength ?? message.length ?? 0;
+          sender.serializeAttachment({ ...me,
+            sentBytes: (me.sentBytes || 0) + bytes, lastSeenAt: Date.now() });
+          peer.ws.serializeAttachment({ ...peer.info,
+            forwardedBytes: (peer.info.forwardedBytes || 0) + bytes,
+            lastSeenAt: Date.now() });
+        }
       } catch {
         sender.send(JSON.stringify({ t: "error", reason: "invalid-chunk" }));
       }
@@ -75,7 +111,7 @@ export class RoomRelay extends DurableObject {
     switch (data.t) {
       case "have": {
         const hashes = validHashes(data.hashes);
-        sender.serializeAttachment({ peer: me.peer, hashes });
+        sender.serializeAttachment({ ...me, hashes, lastSeenAt: Date.now() });
         // 仅在节点登记时发一次摘要列表，平时不扫描、不轮询。
         for (const peer of this.peers()) {
           if (peer.info.peer !== me.peer && hashes.length) {
@@ -86,6 +122,9 @@ export class RoomRelay extends DurableObject {
       }
       case "need": {
         if (!HASH_RE.test(data.hash)) return;
+        sender.serializeAttachment({ ...me,
+          needCount: (me.needCount || 0) + 1,
+          needHash: data.hash.slice(0, 10), lastSeenAt: Date.now() });
         const source = this.peers().find(
           (p) => p.info.peer !== me.peer && p.info.hashes?.includes(data.hash)
         );
@@ -94,6 +133,16 @@ export class RoomRelay extends DurableObject {
         } else {
           sender.send(JSON.stringify({ t: "unavailable", hash: data.hash }));
         }
+        break;
+      }
+      case "verified": {
+        // 只有接收端已完成本地 SHA-256 校验、保存文件后才发送此消息。
+        // 这是客户端上报的成功事件，不代表已经调用 audio.play() 或出声。
+        if (!HASH_RE.test(data.hash)) return;
+        sender.serializeAttachment({ ...me,
+          verifiedCount: (me.verifiedCount || 0) + 1,
+          verifiedHash: data.hash.slice(0, 10),
+          verifiedAt: Date.now(), lastSeenAt: Date.now() });
         break;
       }
       case "done": {
@@ -132,13 +181,16 @@ export class RoomRelay extends DurableObject {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname !== "/relay") return env.ASSETS.fetch(request);
+    if (url.pathname !== "/relay" && url.pathname !== "/relay-diagnostics") {
+      return env.ASSETS.fetch(request);
+    }
 
     // 防止其他站点的普通网页借助用户浏览器滥用中继。
     // 此 Origin 校验不是用户认证；非浏览器客户端可能伪造 Origin。
     const origin = request.headers.get("Origin");
     if (origin && origin !== url.origin) return new Response("Origin denied", { status: 403 });
-    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+    if (url.pathname === "/relay" &&
+        request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response("WebSocket required", { status: 426 });
     }
     const room = url.searchParams.get("room") || "";
