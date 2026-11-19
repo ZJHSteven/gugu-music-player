@@ -160,3 +160,24 @@ test("GM 显式 seek 修改 seq 后立即按新锚点跳转，不误等待长期
   assert.ok(Math.abs(audio.currentTime - 9.4) < 0.001);
   player.close();
 });
+
+test("GM时间表自然跨入下一曲，即使不广播、后台iframe不活跃，iOS也切源", async () => {
+  const { player, audio, setRoom } = make(105_000);
+  await player.prepare();
+  player.enableFromUserGesture();
+  await sleepTick();
+  const second = state();
+  second.track = { hash: "b".repeat(64), duration: 7.5, mime: "audio/mpeg" };
+  second.playback = {
+    ...second.playback, trackId: "song-b", anchor: 105_000, position: 0.5,
+  };
+  // 不调用任何 CloudBridge.subscribe，只有本地 tick 对比绝对计划。
+  setRoom(second);
+  player.tick();
+  await sleepTick();
+  assert.equal(player.trackHash, second.track.hash);
+  assert.equal(player.ready, true);
+  assert.equal(audio.controls, false);
+  assert.ok(audio.playCount >= 2, "获授权的同一个Audio元素继续接下一首");
+  player.close();
+});

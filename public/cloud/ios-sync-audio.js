@@ -276,7 +276,19 @@ export class IosSyncAudio {
 
   tick() {
     if (this.closed || !this.active) return;
-    this.applyRoomState();
+    // v3.3.0 的全局时间表可以在没有任何 Owlbear 广播的情况下，
+    // 推演出新一首歌。背景 Engine 即使被 Safari 节流或停止，
+    // 前台用户激活过的音频元素也必须自己发现计划已跨曲。
+    // 不能拿上一首歌的 Blob 在新一首的时间轴上继续播放。
+    const now = this.getNow();
+    if (now?.track?.hash && now.track.hash !== this.trackHash) {
+      this.prepare(now).catch((error) => {
+        this.error = String(error?.name || "NextTrackError").slice(0, 40);
+        this.notify();
+      });
+      return;
+    }
+    this.applyRoomState(now);
     this.notify();
   }
 
