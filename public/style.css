@@ -82,6 +82,18 @@ html.cloud-mode .diag-jump { display: inline-flex; }
   padding: 12px 14px calc(26px + env(safe-area-inset-bottom, 0px));
 }
 
+/* iPhone 的 Owlbear 宿主可能沿用 manifest 的 640px iframe 高度，
+   但实际可见的浮层只有屏幕的一部分。iframe 内的 100dvh 此时仍是
+   640px：内部 flex 区域认为自己足够高，用户看到的下半截反而被
+   宿主裁掉，且因为“没有溢出”根本无法滚动。
+   对触屏窄面板主动缩短滚动视口，不依赖无法跨域读取的宿主高度。
+   底部额外留出滚动余量，即使最末端被宿主裁切，仍能把按钮滚到上方。
+   这不会改变桌面端的 640px 点歌面板高度。 */
+@media (pointer: coarse) and (max-width: 560px) {
+  .app { height: min(100dvh, 320px); max-height: min(100%, 320px); }
+  .main { padding-bottom: max(150px, env(safe-area-inset-bottom, 0px)); }
+}
+
 /* 正在播放 */
 .now { position: relative; border: 1px solid var(--line); border-radius: 12px; background: var(--card); overflow: hidden; margin-bottom: 12px; }
 .art { position: absolute; inset: 0; background-size: cover; background-position: center; opacity: 0.3; }

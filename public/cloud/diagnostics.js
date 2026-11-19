@@ -8,6 +8,7 @@
  *    两者可能包含房间密钥、个人身份和其他扩展的敏感数据。
  * 4. 浏览器的媒体错误与服务器的「已转发字节」必须明确区分。
  */
+import { CLOUD_RELEASE_VERSION } from "./release-version.js";
 
 function finite(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -21,7 +22,7 @@ function short(value, max = 12) {
 function eventSummary(value) {
   if (!Array.isArray(value)) return [];
   const types = new Set([
-    "connected", "disconnected", "socket-error", "identified",
+    "connected", "disconnected", "socket-error", "identified", "failure",
     "request", "timeout", "error", "unavailable", "sent-queued", "verified",
     "media-error", "playing", "pause", "waiting", "seeking", "play-rejected",
   ]);
@@ -33,6 +34,13 @@ function eventSummary(value) {
     bytes: finite(e.bytes),
     code: finite(e.code),
     position: finite(e.position),
+    // 固定白名单而非原始异常文本，避免将私密 URL 或密钥带进报告。
+    phase: ["wire", "integrity", "storage", "notification"].includes(e.phase)
+      ? e.phase : null,
+    reason: ["invalid-frame", "hash-mismatch", "storage-failed", "processing-failed"].includes(e.reason)
+      ? e.reason : null,
+    storage: ["opfs", "indexeddb", "memory"].includes(e.storage)
+      ? e.storage : null,
   }));
 }
 
@@ -129,7 +137,7 @@ export function makeDiagnosticReport(source) {
   const p = source || {};
   const engine = p.engine || {};
   const report = {
-    version: "3.2.5",
+    version: CLOUD_RELEASE_VERSION,
     generatedAt: new Date().toISOString(),
     ...environment(p.userAgent),
     roomRole: p.role === "GM" ? "GM" : "PLAYER",
