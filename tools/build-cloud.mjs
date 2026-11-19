@@ -33,7 +33,9 @@ manifest.description = "咕咕点歌台云端版：OPFS 本地曲库、DO 按需
 // 改成可见按钮直接解锁同 iframe 的无控件音频，严格跟随 GM 时间锚点。
 // 不影响已经验证的 2MiB 中继修复、MIME 修复、DO 匿名诊断。
 // 尚未在真实 iPhone 上验证，不能宣称已经永久解决后台播放限制。
-manifest.version = "3.2.5";
+// 仅在已上线的v3.2.5上修手机端可操作性和首次音频授权。
+// v3.3的双GM时钟/大歌单DO快照/预测歌单目前仍独立验收，不混入本次热修复。
+manifest.version = "3.2.6";
 
 // 真正的 Owlbear 房间安装时还发现：宿主对相对路径 ./icon.png 的解析
 // 偶尔变成 https://music.zjhstudio.com./icon.png（主机名末尾多出一个点）。
