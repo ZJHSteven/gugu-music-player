@@ -3,6 +3,8 @@ import { initOBR, createBus, apiGet, apiPost, uploadTrack, mediaDuration, lsGet,
 import { Engine } from "./engine.js";
 import { initCloudBridge } from "./cloud/bridge.js";
 import { makeDiagnosticReport } from "./cloud/diagnostics.js";
+import { getAudio } from "./cloud/storage.js";
+import { playableAudioSource } from "./cloud/audio-source.js";
 
 window.__appBuild = "build-folders-1";
 
@@ -64,6 +66,88 @@ let engine = null;
 let heardBg = false;
 let lastSig = "";
 let queued = false;
+// iOS Safari/QQ 内嵌 WebView：可见弹窗的用户点击不会通过
+// BroadcastChannel 赋予后台 iframe 播放音频所需的用户激活权限。
+// 提供在可见弹窗中直接点击的原生 audio 控件作为保底方案。
+const iosAudio = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+let iosDock = null;
+
+function closeIosDock() {
+  if (!iosDock) return;
+  iosDock.audio.pause();
+  iosDock.audio.removeAttribute("src");
+  iosDock.audio.load();
+  if (iosDock.url) URL.revokeObjectURL(iosDock.url);
+  iosDock.root.remove();
+  iosDock = null;
+  bus?.post({ t: "foreground-playback-off" });
+}
+
+async function showIosAudioPlayer() {
+  const track = S.now?.track;
+  if (!track?.hash) {
+    toast("还没有收到房主的当前歌曲", "warn");
+    return;
+  }
+  if (iosDock?.hash === track.hash) return;
+  closeIosDock();
+
+  // 固定在 #view 外：重新渲染歌单不应销毁正在播放的原生控件。
+  const root = document.createElement("section");
+  root.className = "ios-audio-dock";
+  root.innerHTML =
+    '<div class="ios-audio-hint">iPhone 兼容播放：在下面的原生音频控件上直接点击播放。关闭 Owlbear 弹窗可能中断声音。</div>' +
+    '<div class="ios-audio-message">读取已缓存的音频…</div>' +
+    '<audio controls preload="auto" playsinline style="width:100%"></audio>' +
+    '<button type="button" class="btn block" data-act="ios-close">关闭兼容播放器</button>';
+  document.querySelector(".app").appendChild(root);
+  const audio = root.querySelector("audio");
+  const message = root.querySelector(".ios-audio-message");
+  const local = { root, audio, hash: track.hash, url: null };
+  iosDock = local;
+  audio.addEventListener("play", () => {
+    // 只有用户真实点击了原生播放控件，才暂停后台音频避免重音。
+    bus?.post({ t: "foreground-playback-on" });
+    message.textContent = "本机正在播放，请保持弹窗打开。";
+  });
+  audio.addEventListener("error", () => {
+    message.textContent = "当前浏览器无法解码该歌曲，建议房主换 MP3 或 M4A（AAC）文件。";
+  });
+
+  try {
+    const file = await getAudio(track.hash);
+    if (!file) {
+      message.textContent = "当前歌曲还没有缓存完成，请稍后重试。";
+      return;
+    }
+    const source = await playableAudioSource(file, track.mime);
+    if (iosDock !== local) return;
+    local.url = URL.createObjectURL(source.blob);
+    audio.src = local.url;
+    audio.loop = S.now?.playback?.loop === "track";
+    const p = S.now.playback;
+    const elapsed = p.playing ? (Date.now() + S.skew - p.anchor) / 1000 : 0;
+    const expected = Math.max(0, p.position + elapsed);
+    audio.addEventListener("loadedmetadata", () => {
+      if (iosDock !== local) return;
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        try {
+          audio.currentTime = audio.loop ? expected % audio.duration :
+            Math.min(expected, Math.max(0, audio.duration - 0.1));
+        } catch {}
+      }
+    }, { once: true });
+    audio.load(); // 不自动play()，由真实用户点击原生播放按钮完成授权
+    message.textContent = source.codecSupported === "" ?
+      "媒体类型：" + source.mime + "，Safari 可能不支持此编码；请试点原生播放键。" :
+      "文件已就绪，请点击下面原生播放器的播放按钮。";
+  } catch (err) {
+    message.textContent = "本地歌曲加载失败：" +
+      String(err?.message || err).slice(0, 100);
+  }
+}
+
+window.addEventListener("pagehide", closeIosDock);
 
 // ---------- 渲染 ----------
 function render(force) {
