@@ -27,7 +27,9 @@ manifest.name = "咕咕点歌台 · 云端版";
 manifest.description = "咕咕点歌台云端版：OPFS 本地曲库、DO 按需文件共享、Owlbear 房间播放同步。";
 // 仅修补生产版音频发送端 2 MiB ACK 硬阻塞；不同于尚未实机验收的
 // 开发分支 v3.2.2，其他功能和房间元数据格式仍维持上一版。
-manifest.version = "3.2.2";
+// 仅在上一版 ACK 修复上增加用户主动导出的匿名诊断与 DO 实时只读统计；
+// 不能混入尚未完成 Android 真实设备验收的双 GM 时钟与房间快照改造。
+manifest.version = "3.2.3";
 
 // 真正的 Owlbear 房间安装时还发现：宿主对相对路径 ./icon.png 的解析
 // 偶尔变成 https://music.zjhstudio.com./icon.png（主机名末尾多出一个点）。
