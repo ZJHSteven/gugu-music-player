@@ -29,7 +29,9 @@ manifest.description = "咕咕点歌台云端版：OPFS 本地曲库、DO 按需
 // 开发分支 v3.2.2，其他功能和房间元数据格式仍维持上一版。
 // 仅在上一版 ACK 修复上增加用户主动导出的匿名诊断与 DO 实时只读统计；
 // 不能混入尚未完成 Android 真实设备验收的双 GM 时钟与房间快照改造。
-manifest.version = "3.2.3";
+// 生产 v3.2.4 只继承已验收的 v3.2.3 中继与诊断，
+// 并补 iOS 的 OPFS 媒体MIME与可见原生播放器；未混入开发中 3.3 时钟。
+manifest.version = "3.2.4";
 
 // 真正的 Owlbear 房间安装时还发现：宿主对相对路径 ./icon.png 的解析
 // 偶尔变成 https://music.zjhstudio.com./icon.png（主机名末尾多出一个点）。
