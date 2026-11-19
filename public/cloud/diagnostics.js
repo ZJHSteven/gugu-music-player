@@ -129,7 +129,7 @@ export function makeDiagnosticReport(source) {
   const p = source || {};
   const engine = p.engine || {};
   const report = {
-    version: "3.2.3",
+    version: "3.2.5",
     generatedAt: new Date().toISOString(),
     ...environment(p.userAgent),
     roomRole: p.role === "GM" ? "GM" : "PLAYER",
@@ -144,6 +144,23 @@ export function makeDiagnosticReport(source) {
       media: mediaStatus(engine.media),
       events: eventSummary(engine.mediaEvents),
     },
+    // iOS 真正输出声音的前台 iframe 与后台 iframe 可能不同。
+    // 报告必须区分「后台 autoplay 被拒」与「受 GM 控制的前台已在播放」。
+    iosSynchronizedPlayback: p.iosSynchronizedPlayback ? {
+      ready: Boolean(p.iosSynchronizedPlayback.ready),
+      active: Boolean(p.iosSynchronizedPlayback.active),
+      authorized: Boolean(p.iosSynchronizedPlayback.authorized),
+      loading: Boolean(p.iosSynchronizedPlayback.loading),
+      playingInRoom: Boolean(p.iosSynchronizedPlayback.playingInRoom),
+      paused: Boolean(p.iosSynchronizedPlayback.paused),
+      currentTime: finite(p.iosSynchronizedPlayback.currentTime),
+      expected: finite(p.iosSynchronizedPlayback.expected),
+      driftMs: finite(p.iosSynchronizedPlayback.driftMs),
+      error: /^[A-Za-z]{3,40}Error$/.test(p.iosSynchronizedPlayback.error || "")
+        ? p.iosSynchronizedPlayback.error : p.iosSynchronizedPlayback.error ? "LocalAudioError" : null,
+      mediaErrorCode: finite(p.iosSynchronizedPlayback.mediaError),
+      hasNativeScrub: Boolean(p.iosSynchronizedPlayback.hasNativeScrub),
+    } : null,
     relayInAudioEngine: relayStatus(engine.relay),
     relayInPanel: relayStatus(p.panelRelay),
     relayAtCloudflare: serverStatus(p.server),

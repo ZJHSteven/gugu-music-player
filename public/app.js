@@ -241,6 +241,7 @@ async function generateDiagnostics() {
       trackLoaded: Boolean(S.now?.track),
       trackDuration: S.now?.track?.duration ?? null,
       playingInRoom: Boolean(S.now?.playback?.playing),
+      iosSynchronizedPlayback: iosFollower?.status() || null,
       engine: background,
       panelRelay,
       server,
@@ -536,7 +537,7 @@ function playerView() {
   ${
     canClaim
       ? `<button class="btn block" data-act="reclaim" style="margin-bottom:12px">我是主持，取得播放控制权</button>`
-      : `<div class="player-note">音乐由 GM 统一播放，你只能调节自己的音量。关闭面板也不会中断。</div>`
+      : `<div class="player-note">音乐由 GM 统一播放，你只能调节自己的音量。${iosAudio ? "iPhone 的手势解锁播放器需要暂时保留此面板；关闭后 Safari 可能会暂停声音。" : "关闭面板也不会中断。"}</div>`
   }
   <div class="field">
     <div class="label">我的音量 <span class="hint">${vol}%</span></div>

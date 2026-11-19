@@ -299,7 +299,6 @@ input[type="range"]::-webkit-slider-thumb { appearance: none; width: 13px; heigh
   resize: vertical;
 }
 
-/* 原生iOS兜底控件放在 #view 外，以免歌单更新时反复销毁 audio。 */
 /* iPhone 只有「开启并同步」按钮，真正的 audio 元素不可被触摸快进。 */
 .ios-sync-panel {
   margin: 10px 12px 14px;
