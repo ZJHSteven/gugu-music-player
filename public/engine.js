@@ -40,6 +40,14 @@ export class Engine {
     this.audio = new Audio();
     this.audio.preload = "auto";
     this.audio.volume = 0;
+    // 限定长度的本地媒体事件日志；不会自动上传，也不保存实际歌曲名字。
+    // 普通玩家点「生成诊断」时才从后台引擎读出这些状态。
+    this.mediaEvents = [];
+    this.lastPlayError = null;
+    this.recordMedia = (type, detail = {}) => {
+      this.mediaEvents.push({ at: new Date().toISOString(), type, ...detail });
+      if (this.mediaEvents.length > 25) this.mediaEvents.shift();
+    };
 
     this.now = null;
     this.state = null;
@@ -432,6 +440,7 @@ export class Engine {
     });
     this.audio.addEventListener("ended", () => this.onEnded());
     this.audio.addEventListener("error", () => {
+      this.recordMedia("media-error", { code: this.audio.error?.code ?? null });
       report("audio-error", {
         kind: this.kind,
         code: this.audio.error?.code,
@@ -440,6 +449,7 @@ export class Engine {
       this.emitStatus();
     });
     this.audio.addEventListener("playing", () => {
+      this.recordMedia("playing");
       // 只有真的出声了才会触发，用来区分「状态在走」和「确实在播」
       if (this.reportedPlaying !== this.src) {
         this.reportedPlaying = this.src;
@@ -448,9 +458,13 @@ export class Engine {
       this.emitStatus();
     });
     this.audio.addEventListener("play", () => this.emitStatus());
-    this.audio.addEventListener("pause", () => this.emitStatus());
+    this.audio.addEventListener("pause", () => {
+      this.recordMedia("pause");
+      this.emitStatus();
+    });
     // 卡顿事件：网络抖动时浏览器会报 waiting/stalled。记下时间，纠偏时避开这段。
     this.audio.addEventListener("waiting", () => {
+      this.recordMedia("waiting", { ready: this.audio.readyState });
       this.lastWaitingAt = Date.now();
       this.buffering = true;
       this.emitStatus();
@@ -465,6 +479,7 @@ export class Engine {
       }
     });
     this.audio.addEventListener("seeking", () => {
+      this.recordMedia("seeking", { position: Math.round(this.audio.currentTime * 10) / 10 });
       this.buffering = true;
       this.emitStatus();
     });
@@ -599,12 +614,15 @@ export class Engine {
       .play()
       .then(() => {
         this.blocked = false;
+        this.lastPlayError = null;
         if (wasBlocked) this.emitStatus();
         // 切歌后短淡入（180ms），普通开播用 400ms；太长会让开头听起来"闷一下"
         this.fadeIn(this.shortFade ? 180 : 400);
         this.shortFade = false;
       })
       .catch((err) => {
+        this.lastPlayError = String(err?.name || "PlayRejected").slice(0, 40);
+        this.recordMedia("play-rejected", { name: this.lastPlayError });
         report("audio-blocked", { kind: this.kind, name: err?.name, message: String(err?.message || err).slice(0, 160) });
         if (err?.name === "NotAllowedError") {
           this.blocked = true;
@@ -782,9 +800,47 @@ export class Engine {
     });
   }
 
+  /**
+   * 给用户查看的后台音频快照。
+   * 不返回 Audio.src 的 blob: URL、房间 secret、歌曲原始字节等敏感信息。
+   * 必须由插件面板在用户点击诊断后通过同源 BroadcastChannel 主动请求。
+   */
+  diagnosticsSnapshot() {
+    const audio = this.audio;
+    const relay = this.cloud?.relay;
+    return {
+      engineKind: this.kind,
+      role: this.role,
+      media: {
+        paused: audio.paused,
+        ended: audio.ended,
+        seeking: audio.seeking,
+        muted: audio.muted,
+        volume: Number(audio.volume.toFixed(3)),
+        currentTime: Number(audio.currentTime.toFixed(2)) || 0,
+        duration: Number.isFinite(audio.duration) ? Number(audio.duration.toFixed(2)) : null,
+        readyState: audio.readyState,
+        networkState: audio.networkState,
+        errorCode: audio.error?.code ?? null,
+        errorName: this.lastPlayError,
+        blocked: this.blocked,
+        buffering: Boolean(this.buffering),
+        rate: audio.playbackRate,
+      },
+      mediaEvents: this.mediaEvents.slice(-20),
+      relay: relay?.diagnostics() || null,
+    };
+  }
+
   onBus(msg) {
     if (!msg || this.stopped) return;
     switch (msg.t) {
+      case "diagnostics-request":
+        this.bus.post({
+          t: "diagnostics-response",
+          snapshot: this.diagnosticsSnapshot(),
+        });
+        break;
       case "who":
         this.bus.post({ t: "hello", kind: this.kind, role: this.role });
         if (this.now) this.bus.post({ t: "now", now: this.now });
