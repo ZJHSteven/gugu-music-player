@@ -963,14 +963,18 @@ export class Engine {
     this.releaseWarmup();
     this.warmupHash = track.hash;
     this.warmupRetryAt = Date.now() + 2000;
-    getAudio(track.hash).then((file) => {
+    getAudio(track.hash).then(async (file) => {
       if (this.stopped || this.warmupHash !== track.hash) return;
       if (!file || file.size > 16 * 1024 * 1024) {
         this.warmupHash = "";
         this.warmupRetryAt = Date.now() + 3500;
         return;
       }
-      const url = URL.createObjectURL(file);
+      // 与主播放元素复用相同的 MIME 修复，避免下一首预热时 iOS
+      // 把无扩展名 OPFS 文件识别成无法解码的二进制资源。
+      const source = await playableAudioSource(file, track.mime);
+      if (this.stopped || this.warmupHash !== track.hash) return;
+      const url = URL.createObjectURL(source.blob);
       try {
         const audio = new Audio();
         audio.preload = "auto";
@@ -989,7 +993,11 @@ export class Engine {
     if (this.prompted) return;
     this.prompted = true;
     try {
-      this.OBR?.notification?.show?.("音乐台需要点一下才能发声：打开 ♪ 面板，点「开启声音」");
+      this.OBR?.notification?.show?.(
+        /iPhone|iPad|iPod/i.test(navigator.userAgent) ?
+          "音乐台需要用户授权：打开 ♪ 面板，点「开启并同步房间声音」" :
+          "音乐台需要点一下才能发声：打开 ♪ 面板，点「开启声音」"
+      );
     } catch {}
   }
 
