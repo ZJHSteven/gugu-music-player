@@ -24,6 +24,7 @@ function eventSummary(value) {
     "connected", "disconnected", "socket-error", "identified",
     "request", "timeout", "error", "unavailable", "sent-queued", "verified",
     "media-error", "playing", "pause", "waiting", "seeking", "play-rejected",
+    "native-loop", "plan-transition", "next-preload", "clock-recovery",
   ]);
   return value.slice(-20).filter((e) => types.has(e?.type)).map((e) => ({
     at: /^\d{4}-\d{2}-\d{2}T/.test(e.at || "") ? e.at : null,
@@ -71,6 +72,7 @@ function mediaStatus(m) {
     ended: Boolean(m.ended),
     seeking: Boolean(m.seeking),
     muted: Boolean(m.muted),
+    loop: Boolean(m.loop),
     volume: finite(m.volume),
     currentTime: finite(m.currentTime),
     duration: finite(m.duration),
@@ -120,10 +122,14 @@ export function makeDiagnosticReport(source) {
   const p = source || {};
   const engine = p.engine || {};
   const report = {
-    version: "3.2.3",
+    version: "3.3.0",
     generatedAt: new Date().toISOString(),
     ...environment(p.userAgent),
-    roomRole: p.role === "GM" ? "GM" : "PLAYER",
+    roomRole: p.role === "GM" ? "GM" :
+      p.role === "PLAYER" ? "PLAYER" : "UNKNOWN",
+    owlBearSdkReady: p.sdkReady === true,
+    owlBearRoomIdPresent: p.roomIdPresent === true,
+    audioEngineResponded: Boolean(p.engineResponded),
     hasMusicSession: Boolean(p.hasMusicSession),
     revision: finite(p.revision),
     trackLoaded: Boolean(p.trackLoaded),
@@ -134,6 +140,16 @@ export function makeDiagnosticReport(source) {
         engine.engineKind === "popover" ? "popover" : "unavailable",
       media: mediaStatus(engine.media),
       events: eventSummary(engine.mediaEvents),
+      // 局部闭环统计不含身份和房间密钥，也不会自动上报至 DO。
+      clock: engine.clock ? {
+        samples: finite(engine.clock.samples),
+        lastDriftMs: finite(engine.clock.lastDriftMs),
+        meanAbsDriftMs: finite(engine.clock.meanAbsDriftMs),
+        maxAbsDriftMs: finite(engine.clock.maxAbsDriftMs),
+        recoveries: finite(engine.clock.recoveries),
+        clockOffsetMs: finite(engine.clock.clockOffsetMs),
+        calibrationAgeMs: finite(engine.clock.calibrationAgeMs),
+      } : null,
     },
     relayInAudioEngine: relayStatus(engine.relay),
     relayInPanel: relayStatus(p.panelRelay),

@@ -8,6 +8,8 @@ import { getAudio } from "./cloud/storage.js";
 import {
   shouldSnapOnCloudUpdate, initialCloudSeek, cloudPhaseDifference,
 } from "./cloud/sync-policy.js";
+import { canPredictPlayback, upcomingTrack } from "./cloud/plan.js";
+import { computeClockCorrection, DriftMonitor } from "./cloud/clock-control.js";
 
 // 同步策略（三层，由轻到重）：
 //   1. 偏差 < DEADBAND      → 不动
@@ -43,6 +45,10 @@ export class Engine {
     this.audio = new Audio();
     this.audio.preload = "auto";
     this.audio.volume = 0;
+    this.driftMonitor = new DriftMonitor(120);
+    this.warmup = null; // 下一首：隐藏的、静音且未播放的预解码音频元素
+    this.warmupHash = "";
+    this.warmupRetryAt = 0;
     // 限定长度的本地媒体事件日志；不会自动上传，也不保存实际歌曲名字。
     // 普通玩家点「生成诊断」时才从后台引擎读出这些状态。
     this.mediaEvents = [];
@@ -117,7 +123,10 @@ export class Engine {
         }
       });
       this.emitStatus();
-      this.timers.push(setInterval(() => this.tick(), 500));
+      // 云版的自然切歌由每个客户端本地时间轴预测，不再等 GM 广播。
+      // 200ms 只执行本地计算，不进行任何网络轮询；正常单曲循环仍由
+      // HTMLAudioElement.loop 原生连续播放，不需要每轮重建音频源。
+      this.timers.push(setInterval(() => this.tick(), 200));
       this.timers.push(setInterval(() => this.bus.post({ t: "hello", kind: this.kind, role: this.role }), 12000));
       return;
     }
@@ -454,7 +463,16 @@ export class Engine {
       }
       this.emitStatus();
     });
-    this.audio.addEventListener("ended", () => this.onEnded());
+    this.audio.addEventListener("ended", () => {
+      if (window.BARD_CLOUD && canPredictPlayback(this.cloud?.state)) {
+        // 多曲目自然结束后，不向 Owlbear 发网络命令，而是直接计算
+        // 本地此刻应该播放的下一首。它与播放器 tick 共用同一套计划，
+        // 手机即使晚收到后续 Metadata，也不需要等待下一次房间广播。
+        this.advanceLocalPlan();
+      } else {
+        this.onEnded();
+      }
+    });
     this.audio.addEventListener("error", () => {
       this.recordMedia("media-error", { code: this.audio.error?.code ?? null });
       report("audio-error", {
@@ -510,6 +528,17 @@ export class Engine {
       this.buffering = false;
       this.emitStatus();
     });
+    this.audio.addEventListener("timeupdate", () => {
+      // 真正的原生循环没有 ended 事件；根据音频位置回绕记录边界。
+      // 对诊断 P40 的「每轮末尾暂停一会」非常有用。
+      const here = this.audio.currentTime;
+      const last = this.lastMediaPosition;
+      if (this.audio.loop && Number.isFinite(last) &&
+          last > here + 0.5 && this.audio.duration - last < 1.5) {
+        this.recordMedia("native-loop", { position: Number(here.toFixed(2)) });
+      }
+      this.lastMediaPosition = here;
+    });
   }
 
   /** 当前缓冲领先播放头多少秒。 */
@@ -539,7 +568,9 @@ export class Engine {
     // 单曲循环由各设备的音频解码器直接无缝循环，而不是每过十几秒都
     // 等 Owlbear Metadata 回来后停播再启动。GM 仍通过时钟更新房间 seq，
     // 而同曲的循环边界不会迫使其他客户端反复执行 play()。
-    this.audio.loop = Boolean(window.BARD_CLOUD && p.loop === "track");
+    this.audio.loop = Boolean(window.BARD_CLOUD &&
+      (p.loop === "track" ||
+        (p.loop === "list" && this.cloud?.state?.playlist.length === 1)));
 
     if (window.BARD_CLOUD && track.src.startsWith("cloud:")) {
       // Blob URL 由每名玩家本地 OPFS/IndexedDB 生成。DO 不返回歌曲 URL，
@@ -559,7 +590,22 @@ export class Engine {
             this.src = ""; // 缺文件先保持静音，待中继完成后重试
             return;
           }
-          this.cloudBlobUrl = URL.createObjectURL(file);
+          // 如果这首就是预热过的下一首，复用其 Blob URL，省去一次
+          // 静态资源定位。预热不能保证所有浏览器完全无缝解码；
+          // 在 Safari 上 preload 只是提示，仍要保留缓冲和错误兜底。
+          if (this.warmup?.hash === track.hash) {
+            this.cloudBlobUrl = this.warmup.url;
+            try {
+              this.warmup.audio.pause();
+              this.warmup.audio.removeAttribute("src");
+              this.warmup.audio.load();
+            } catch {}
+            this.warmup = null;
+            this.warmupHash = "";
+          } else {
+            this.cloudBlobUrl = URL.createObjectURL(file);
+            this.releaseWarmup();
+          }
           this.audio.src = this.cloudBlobUrl;
           this.resetRate();
           this.audio.load();
@@ -614,35 +660,32 @@ export class Engine {
         return this.resetRate();
       }
       const duration = Number(this.now?.track?.duration);
-      const looping = playback.loop === "track";
-      const goal = initialCloudSeek(this.target(), duration, playback.loop, true);
-      const drift = cloudPhaseDifference(this.audio.currentTime, goal, duration, looping);
-      const gap = Math.abs(drift);
-      if (gap < 0.1) {
-        this.largeDriftSince = 0;
+      // 单曲循环和仅有一首的歌单循环都通过原生 audio.loop 播放，
+      // 但“循环次数”不能决定全局时间轴。只用绝对时间表计算应到的相位。
+      const cyclic = Boolean(this.audio.loop);
+      const expected = initialCloudSeek(this.target(), duration,
+        cyclic ? "track" : playback.loop, true);
+      const now = Date.now();
+      const result = computeClockCorrection({
+        actual: this.audio.currentTime, expected, duration, cyclic, now,
+        largeSince: this.largeDriftSince || 0, lastSeek: this.lastSeekAt || 0,
+      });
+      this.largeDriftSince = result.nextLargeSince;
+      this.driftMonitor.push(result.drift, result.mode, now);
+      if (result.seek) {
+        try {
+          this.audio.currentTime = expected;
+          this.lastSeekAt = now;
+          this.settleUntil = now + 5000;
+          this.recordMedia("clock-recovery", { position: Number(expected.toFixed(2)) });
+        } catch {}
         return this.resetRate();
       }
-      if (gap >= 2.5) {
-        this.largeDriftSince ||= Date.now();
-        if (Date.now() - this.largeDriftSince >= 6000 &&
-            Date.now() - (this.lastSeekAt || 0) >= 20000) {
-          try {
-            this.audio.currentTime = goal;
-            this.lastSeekAt = Date.now();
-            this.settleUntil = Date.now() + 5000;
-          } catch {}
-          this.largeDriftSince = 0;
-        }
-        return this.resetRate();
-      }
-      this.largeDriftSince = 0;
-      // preservesPitch 用于保证变速时人声的音高尽可能不改变；
-      // 未支持的浏览器会忽略该属性，故将速度变化严格控制在 ±1.5%。
+      // 限制在 ±1.5%，保留音高且不频繁 reset/pause/play；仅严重且
+      // 持续脱节时才按冷却策略执行一次硬恢复。
       if ("preservesPitch" in this.audio) this.audio.preservesPitch = true;
-      const correction = Math.max(-0.015, Math.min(0.015, -drift * 0.045));
-      const nextRate = Number((1 + correction).toFixed(3));
-      if (Math.abs(this.audio.playbackRate - nextRate) >= 0.002) {
-        this.audio.playbackRate = nextRate;
+      if (Math.abs(this.audio.playbackRate - result.rate) >= 0.002) {
+        this.audio.playbackRate = result.rate;
       }
       return;
     }
@@ -716,6 +759,7 @@ export class Engine {
   halt() {
     this.resetRate();
     this.src = "";
+    this.releaseWarmup();
     if (this.cloudBlobUrl) {
       URL.revokeObjectURL(this.cloudBlobUrl);
       this.cloudBlobUrl = null;
@@ -729,6 +773,12 @@ export class Engine {
   }
 
   onEnded() {
+    // 可预测的自然切换无需修改房间元数据：否则广播往返延迟会直接
+    // 变成听感中的切歌停顿，iOS/Safari 尤为明显。
+    if (window.BARD_CLOUD && canPredictPlayback(this.cloud?.state)) {
+      this.advanceLocalPlan();
+      return;
+    }
     if (this.role !== "GM" || !this.token) return;
     if (!window.BARD_CLOUD && Number(this.now?.track?.duration || 0) > 0) return; // 原版 Node 会自动切歌
     if (window.BARD_CLOUD) {
@@ -831,16 +881,95 @@ export class Engine {
 
   tick() {
     if (this.stopped) return;
+    if (window.BARD_CLOUD) {
+      this.advanceLocalPlan();
+    }
     // 不能只依赖 HTMLAudioElement 的 ended 事件：后台 iframe 被浏览器禁止
     // 自动播放、系统挂起或设备没有声音输出时，音频可能根本没开始播放，
     // 但房间共享的播放时间锚点仍在推进，玩家会看到 2:57 / 0:20 一类越界。
     // 复用既有 500ms 本地 tick，以 GM 时钟到达曲长作为结束的第二信号，
     // 不增加任何 Owlbear/DO 的周期网络请求，也不让玩家擅自切歌。
-    if (window.BARD_CLOUD && this.role === "GM" && this.token &&
+    if (window.BARD_CLOUD && !canPredictPlayback(this.cloud?.state) &&
+        this.role === "GM" && this.token &&
         this.now?.playback?.playing && Number(this.now?.track?.duration) > 0 &&
         this.target() >= this.now.track.duration) this.onEnded();
     if (this.now?.playback?.playing) this.correctDrift();
     this.bus.post({ t: "tick", time: this.audio.currentTime || 0, playing: !this.audio.paused });
+  }
+
+  /** 各端根据同一条 GM 时间轴预测当前应播放的歌曲，不等待切歌广播。 */
+  advanceLocalPlan() {
+    if (!this.cloud?.state || !canPredictPlayback(this.cloud.state)) return;
+    const projected = this.cloud.getNow();
+    if (!projected) return;
+    const differentTrack = projected.track?.id !== this.now?.track?.id;
+    const changedPlaying = projected.playback?.playing !== this.now?.playback?.playing;
+    if (differentTrack || changedPlaying) {
+      this.recordMedia("plan-transition", {
+        // 诊断只记两首之间发生了转换，不暴露实际歌曲名字。
+        position: Math.round((projected.playback?.position || 0) * 10) / 10,
+      });
+      this.onNow(projected);
+      // 一旦跨入下一首，重新提高这一首的传输优先级。
+      // 此操作仅在自然切歌时触发，不会每 200ms 扫描 OPFS 或网络。
+      if (differentTrack) {
+        this.cloud.relay?.updateTracks(this.cloud.state.playlist,
+          projected.playback?.trackId).catch(console.warn);
+      }
+    }
+    this.prepareUpcoming();
+  }
+
+  /** 清理预热音频，但不会干扰主播放元素当前正在播放的 Blob URL。 */
+  releaseWarmup() {
+    if (this.warmup) {
+      try {
+        this.warmup.audio.pause();
+        this.warmup.audio.removeAttribute("src");
+        this.warmup.audio.load();
+      } catch {}
+      URL.revokeObjectURL(this.warmup.url);
+      this.warmup = null;
+    }
+    this.warmupHash = "";
+  }
+
+  /**
+   * 提前预热下一首，而不是等到上一首自然结束才开始从 OPFS 加载。
+   *
+   * 大音频文件受手机内存限制，最多对 16MiB 的下一首执行浏览器预热；
+   * 中继 RelayClient 仍会按当前曲目优先、其余限并发下载到 OPFS。
+   * 这个方法纯本地；它不会给 GM 或 Cloudflare 发送播放计划轮询。
+   */
+  prepareUpcoming() {
+    if (!this.now?.playback?.playing || !this.cloud?.state) return;
+    const coming = upcomingTrack(this.cloud.state, Date.now() + this.cloud.skew);
+    const track = coming?.track;
+    if (!track || coming.inSeconds > 20 || track.hash === this.now?.track?.hash ||
+        this.warmupHash === track.hash || Date.now() < this.warmupRetryAt) return;
+    this.releaseWarmup();
+    this.warmupHash = track.hash;
+    this.warmupRetryAt = Date.now() + 2000;
+    getAudio(track.hash).then((file) => {
+      if (this.stopped || this.warmupHash !== track.hash) return;
+      if (!file || file.size > 16 * 1024 * 1024) {
+        this.warmupHash = "";
+        this.warmupRetryAt = Date.now() + 3500;
+        return;
+      }
+      const url = URL.createObjectURL(file);
+      try {
+        const audio = new Audio();
+        audio.preload = "auto";
+        audio.src = url;
+        audio.load(); // 不调用 play()，不会抢占 iOS 音频输出焦点
+        this.warmup = { hash: track.hash, audio, url };
+        this.recordMedia("next-preload", { position: Math.round(coming.inSeconds) });
+      } catch {
+        URL.revokeObjectURL(url);
+        this.warmupHash = "";
+      }
+    }).catch(() => { if (this.warmupHash === track.hash) this.warmupHash = ""; });
   }
 
   promptUnlock() {
@@ -896,6 +1025,7 @@ export class Engine {
         ended: audio.ended,
         seeking: audio.seeking,
         muted: audio.muted,
+        loop: audio.loop,
         volume: Number(audio.volume.toFixed(3)),
         currentTime: Number(audio.currentTime.toFixed(2)) || 0,
         duration: Number.isFinite(audio.duration) ? Number(audio.duration.toFixed(2)) : null,
@@ -908,6 +1038,15 @@ export class Engine {
         rate: audio.playbackRate,
       },
       mediaEvents: this.mediaEvents.slice(-20),
+      clock: {
+        ...this.driftMonitor.snapshot(),
+        // 数值表示“共享播放源时钟 - 本机时钟”的估计偏移，
+        // 与声卡真实输出延迟不同，切勿作为 10ms 声学同步证明。
+        clockOffsetMs: Number.isFinite(this.cloud?.skew)
+          ? Math.round(this.cloud.skew) : null,
+        calibrationAgeMs: this.cloud?.lastCalibrationAt
+          ? Date.now() - this.cloud.lastCalibrationAt : null,
+      },
       relay: relay?.diagnostics() || null,
     };
   }
@@ -986,7 +1125,7 @@ export class Engine {
     if (!Number.isFinite(t)) return;
     const drift = window.BARD_CLOUD
       ? cloudPhaseDifference(this.audio.currentTime, t, duration,
-        p?.loop === "track" && p?.playing)
+        this.audio.loop && p?.playing)
       : this.audio.currentTime - t;
     if (Math.abs(drift) > 0.2) {
       try {

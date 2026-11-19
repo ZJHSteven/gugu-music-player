@@ -9,6 +9,7 @@ import {
   createState, applyCommand, addTrack, publicNow, publicState,
   currentPosition, normalizeState, assertMetadataSize,
 } from "../../public/cloud/state.js";
+import { projectPlayback } from "../../public/cloud/plan.js";
 
 globalThis.crypto ??= webcrypto;
 const secret = "0123456789abcdef0123456789abcdef";
@@ -44,7 +45,9 @@ test("播放状态只使用锚点推算，无逐秒服务端消息", () => {
   assert.equal(state.playback.position, 26);
   state = applyCommand(state, { type: "play" }, t + 13000);
   assert.equal(currentPosition(state.playback, t + 15000), 28);
-  assert.equal(publicNow(state).track.src, `cloud:${HASH_A}`);
+  // 不可再使用当前真实年份的 Date.now() 来查询测试里设定的历史 2024
+  // 时间锚点；新协议会在真实过去两年的时间轴上自动推进数百万首歌曲。
+  assert.equal(publicNow(state, t + 15000).track.src, `cloud:${HASH_A}`);
 });
 
 test("曲目进退、单曲循环、末尾停止和歌单增删", () => {
@@ -56,8 +59,10 @@ test("曲目进退、单曲循环、末尾停止和歌单增删", () => {
   s = applyCommand(s, { type: "ended" });
   assert.equal(s.playback.trackId, s.playlist[1].id);
   s = applyCommand(s, { type: "settings", loop: "off" });
-  s = applyCommand(s, { type: "ended" });
-  assert.equal(s.playback.playing, false);
+  // 已知时长的 off 模式应靠统一计划自行停止，不依赖任何 GM ended 广播。
+  const atEnd = projectPlayback(s, s.playback.anchor +
+    (s.playlist[1].duration + 1) * 1000);
+  assert.equal(atEnd.playing, false);
   s = applyCommand(s, { type: "playlist", op: "remove", trackId: s.playlist[1].id });
   assert.equal(s.playlist.length, 1);
   s = applyCommand(s, { type: "playlist", op: "clear" });
@@ -75,8 +80,13 @@ test("修改设置不应导致歌曲进度跳回起点", () => {
 
 test("自动结束携带播放序列号：延迟或重复的 ended 绝不跳过新歌", () => {
   let s = twoTracks();
+  // 已知时长使用预测式切歌，旧 GM 端的 ended 包必须被忽略；
+  // 但曲目缺失时长时仍支持旧式 ended + expectedSeq 兜底。
   s = applyCommand(s, { type: "select", trackId: s.playlist[0].id });
   const initialSeq = s.playback.seq;
+  assert.equal(applyCommand(s, { type: "ended", expectedSeq: initialSeq }), s);
+  // 某一首时长不可预测，客户端不应继续自行推演顺序。
+  s.playlist[1].duration = 0;
   s = applyCommand(s, { type: "ended", expectedSeq: initialSeq });
   assert.equal(s.playback.trackId, s.playlist[1].id);
   assert.equal(s.playback.playing, true);
@@ -103,14 +113,17 @@ test("短歌循环即使后台定时器延迟，也保留当前相位而不把�
   let s = applyCommand(s0, { type: "settings", loop: "track" }, 100_000);
   s = applyCommand(s, { type: "select", trackId: first.id }, 100_000);
   // 正常情况下下一轮刚开始 0.1s 才收到消息。
-  s = applyCommand(s, { type: "ended", expectedSeq: s.playback.seq }, 112_500);
-  assert.ok(Math.abs(s.playback.position - 0.1) < 0.00001);
+  const firstSeq = s.playback.seq;
+  const naturallyLooped = projectPlayback(s, 112_500);
+  assert.ok(Math.abs(naturallyLooped.position - 0.1) < 0.00001);
+  // 不管旧 GM 发来几次重复 ended，原始房间计划仍保持不变。
+  assert.equal(applyCommand(s, { type: "ended", expectedSeq: firstSeq },
+    112_500), s);
   // JS 被系统暂停 38s 才恢复时，应恢复到第 4 轮已经走过的 0.8s，
   // 而不是跳回开头并与其余浏览器产生突兀的不同步。
   const nextNow = 112_500 + 38_000;
-  s = applyCommand(s, { type: "ended", expectedSeq: s.playback.seq }, nextNow);
   const predicted = (38_000 / 1000 + 0.1) % duration;
-  assert.ok(Math.abs(s.playback.position - predicted) < 0.00001);
+  assert.ok(Math.abs(projectPlayback(s, nextNow).position - predicted) < 0.00001);
 });
 
 test("隐私设置、分类管理及非法操作", () => {

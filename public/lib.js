@@ -214,6 +214,7 @@ export function createBus({ onMessage }) {
 }
 
 // ---------- OBR SDK ----------
+import { validateOwlbearIdentity } from "./obr-identity.js";
 let sdkPromise = null;
 
 /**
@@ -280,7 +281,8 @@ async function detectRole(OBR, tries = 8, gap = 500) {
     }
     await new Promise((r) => setTimeout(r, gap));
   }
-  return { role: "PLAYER", attempts };
+  // 多次报错只说明 SDK 身份未就绪，不能把未知身份强行判作 PLAYER。
+  return { role: null, attempts };
 }
 
 /** 返回 { OBR, ready, role, attempts, roomId, name }。?dev=1 用假 SDK。 */
@@ -289,11 +291,31 @@ export async function initOBR() {
     const dev = new URLSearchParams(location.search).get("dev");
     sdkPromise = dev ? import("./dev-sdk.js").then((m) => ({ dev: true, OBR: m.default })) : loadSdk().then((OBR) => ({ dev: false, OBR }));
   }
-  const { OBR, dev } = await sdkPromise;
+  let sdk;
+  try { sdk = await sdkPromise; }
+  catch (error) {
+    sdkPromise = null; // 允许下一次真实加载重试
+    throw error;
+  }
+  const { OBR, dev } = sdk;
   const ready = await waitReady(OBR);
+  // SDK 尚未处理父窗口握手时 getRole() 会一直抛错。先保证 onReady
+  // 真正返回，避免每次默认 PLAYER，令用户以为音乐会话不存在。
+  if (!ready) {
+    report("identity-unavailable", { code: "SDK_NOT_READY", dev });
+    validateOwlbearIdentity({ ready, role: null, roomId: "" });
+  }
   const { role, attempts } = await detectRole(OBR);
   const roomId = OBR.room?.id || "";
+  try {
+    validateOwlbearIdentity({ ready, role, roomId });
+  } catch (error) {
+    report("identity-unavailable", {
+      code: error.code, dev, attempts: attempts.length, roomIdPresent: !!roomId,
+    });
+    throw error;
+  }
   const name = await OBR.player.getName().catch(() => "");
-  report("identity", { dev, ready, role, roomId, attempts });
+  report("identity", { dev, ready, role, roomIdPresent: true, attempts });
   return { OBR, ready, role, attempts, roomId, name };
 }

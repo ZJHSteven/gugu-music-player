@@ -17,6 +17,7 @@ import {
 } from "./state.js";
 import { digest, getAudio, putAudio, requestPersistence } from "./storage.js";
 import { createBackupArchive, readBackupArchive } from "./backup.js";
+import { projectPlayback } from "./plan.js";
 import {
   ROOM_METADATA_LIMIT, ROOM_SNAPSHOT_THRESHOLD,
   encodedSize, isSnapshotPointer, saveRoomSnapshot, loadRoomSnapshot,
@@ -117,18 +118,35 @@ export class CloudBridge {
       }
     });
     await this.refresh();
+    // 某些复杂房间（梅林的房间尤其明显）在扩展首次载入时，Owlbear
+    // SDK 虽然就绪，但第一次 getMetadata() 尚未含其他客户端已写入的状态。
+    // 无状态不等于空房间：只在启动后的有限时间重读 3 次；如果 GM
+    // 之后创建了状态，onMetadataChange 仍然会正常立即触发。
+    // 无需刷新整个 Owlbear 页面，也不会对 DO 发周期请求。
+    for (const delay of [2000, 5000, 12_000]) {
+      const timer = setTimeout(() => {
+        if (!this.state && !this.initializingState) {
+          this.refresh().catch((error) => {
+            console.warn("[gugu-cloud] 初始化期间重读房间音乐状态失败", error);
+          });
+        }
+      }, delay);
+      timer.unref?.();
+    }
     // 房间初始化改为惰性：GM 首次上传、创建分类或领取控制权时进行。
     // 这样空房间的两个 iframe 不会争抢不同随机 secret，也不会在用户
     // 仅仅查看别人的房间时，无意消耗其公共 Metadata 配额。
     // 所有角色都需要校准，包括「同一 GM 账号在两台设备上」的情况。
-    // 不发送周期 DO 心跳；播放期间每 5 分钟向当前时钟源校准一次即可。
+    // 不发送周期 DO 心跳。播放时每 30 秒做一次低开销 Owlbear
+    // Broadcast 时间探针，防止手机系统时钟长时间漂移导致“目标时间”
+    // 本身渐渐偏离。这里校准的是时钟，音频偏差仍由 Engine 闭环纠正。
     this.calibrateClock().catch(console.warn);
     this.clockMaintenance = setInterval(() => {
       if (this.state?.playback?.playing &&
-          Date.now() - this.lastCalibrationAt > 5 * 60 * 1000) {
+          Date.now() - this.lastCalibrationAt > 30_000) {
         this.calibrateClock().catch(console.warn);
       }
-    }, 5 * 60 * 1000);
+    }, 30_000);
     this.clockMaintenance.unref?.();
     return this;
   }
@@ -139,6 +157,11 @@ export class CloudBridge {
       this.skew = 0;
       this.lastCalibrationAt = Date.now();
       return;
+    }
+    // 每轮周期校准重新比较 RTT，而不是永久保留第一次的最小值。
+    // 否则设备连续工作数小时后，手机时钟漂移可能永远得不到更新。
+    if (Date.now() - this.lastCalibrationAt > 60 * 1000) {
+      this.bestRoundTrip = Infinity;
     }
     // 广播两次轻量 NTP 风格时间探针，取 RTT 较低的一次，避免单次延迟
     // 把 Safari 手机的目标时间计算错几个秒。只比较指定 clockId 响应。
@@ -196,7 +219,10 @@ export class CloudBridge {
       );
       this.relay.connect();
     }
-    this.relay?.updateTracks(state.playlist, state.playback?.trackId).catch(console.warn);
+    // 很晚才进入房间的玩家可能已经错过数轮自然切歌。
+    // 必须优先请求“此刻预测的歌曲”，而不是历史播放指令里最初的 trackId。
+    const activeTrack = this.getNow()?.playback?.trackId || state.playback?.trackId;
+    this.relay?.updateTracks(state.playlist, activeTrack).catch(console.warn);
     this.emit();
   }
 
@@ -238,7 +264,9 @@ export class CloudBridge {
 
   getNow() {
     if (!this.state) return null;
-    const now = publicNow(this.state);
+    // 所有设备都用音频源的绝对时钟推导当前曲目；然后把锚点换回
+    // 本设备时间，供 HTMLAudioElement 的本地纠偏函数直接使用。
+    const now = publicNow(this.state, Date.now() + this.skew);
     // 把 GM 机器的绝对 anchor 转成本机时间轴。
     now.playback.anchor -= this.skew;
     return now;
@@ -288,7 +316,13 @@ export class CloudBridge {
       // 修改指令中的 Date.now() 必须先换算成当前播放源的时钟，否则同一个
       // GM 账号在手机上暂停/播放时，会把手机的绝对时间写到电脑锚点里。
       const offset = this.skew;
-      const next = await transform(this.state, Date.now() + offset);
+      const sourceNow = Date.now() + offset;
+      // GM 在第 N 首播放中按“暂停/下一首/改音量/加歌”时，
+      // 首先把旧时间轴推导为实际正在播放的歌曲再执行修改。
+      // 否则历史锚点仍停在一开始那首歌，用户一操作就会跳回过去。
+      const source = { ...this.state,
+        playback: projectPlayback(this.state, sourceNow) };
+      const next = await transform(source, sourceNow);
       // 过期的 ended(expectedSeq) 应当是纯空操作，不要为同一修订
       // 重复写 Owlbear Metadata 和 Broadcast，尤其不能打断玩家进度。
       if (next.rev === this.state.rev) {

@@ -3,6 +3,7 @@ import { initOBR, createBus, apiGet, apiPost, uploadTrack, mediaDuration, lsGet,
 import { Engine } from "./engine.js";
 import { initCloudBridge } from "./cloud/bridge.js";
 import { makeDiagnosticReport } from "./cloud/diagnostics.js";
+import { shouldRetryOwlbear, resetOwlbearRetries } from "./obr-identity.js";
 
 window.__appBuild = "build-folders-1";
 
@@ -168,7 +169,7 @@ async function generateDiagnostics() {
       const timeout = setTimeout(() => {
         if (S.diagnosticsReply === reply) S.diagnosticsReply = null;
         resolve(null);
-      }, 1400);
+      }, 3500);
       const reply = (data) => {
         clearTimeout(timeout);
         if (S.diagnosticsReply === reply) S.diagnosticsReply = null;
@@ -206,6 +207,9 @@ async function generateDiagnostics() {
     S.diagnosticsReport = makeDiagnosticReport({
       userAgent: navigator.userAgent,
       role: S.role,
+      sdkReady: window.__bardIdentity?.ready,
+      roomIdPresent: Boolean(window.__bardIdentity?.roomIdPresent),
+      engineResponded: Boolean(background),
       hasMusicSession: Boolean(cloud?.state),
       revision: cloud?.state?.rev ?? null,
       trackLoaded: Boolean(S.now?.track),
@@ -1027,6 +1031,10 @@ async function boot() {
   window.__bardBooted = true;
   loadUpdateState().then(() => render(true)).catch(() => {});
   const { OBR, role, roomId, attempts, ready } = await initOBR();
+  // 只保存 SDK 是否就绪/是否有房间 ID，不保存实际 roomId 或账号。
+  // 诊断报告可以区分「会话为空」与「SDK 根本没有拿到房间身份」。
+  window.__bardIdentity = { ready, roomIdPresent: Boolean(roomId) };
+  resetOwlbearRetries(sessionStorage);
   S.role = role;
   S.roomId = roomId;
   if (window.BARD_CLOUD && roomId) {
@@ -1094,10 +1102,19 @@ function onBus(msg) {
 
 boot().catch((err) => {
   console.error(err);
+  const identityFailure = ["SDK_NOT_READY", "ROLE_UNAVAILABLE", "ROOM_UNAVAILABLE"]
+    .includes(err?.code);
+  const { retry, delay } = identityFailure
+    ? shouldRetryOwlbear(sessionStorage) : { retry: false };
   const view = document.getElementById("view");
   if (view) {
-    view.innerHTML = `<div class="notice err">${icon("alert")}<span>扩展初始化失败：${esc(
-      err.message || err
-    )}</span></div><button class="btn primary block" onclick="location.reload()">重新加载</button>`;
+    view.innerHTML = `<div class="notice err">${icon("alert")}<span>
+      ${identityFailure ? "正在重新连接 Owlbear 房间，而不是等待歌曲下载：" : "扩展初始化失败："}
+      ${esc(err.message || err)}
+    </span></div><button class="btn primary block" onclick="location.reload()">
+      重新连接房间</button>
+      <div class="foot">错误代码：${esc(err?.code || "STARTUP_ERROR")}
+      ${retry ? "；将有限次自动重试" : "；已停止自动重试，避免刷新风暴"}</div>`;
   }
+  if (retry) setTimeout(() => location.reload(), delay);
 });

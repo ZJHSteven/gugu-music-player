@@ -10,6 +10,7 @@
 export const METADATA_KEY = "com.zjhstudio.gugu-cloud/state";
 export const BROADCAST_CHANNEL = "com.zjhstudio.gugu-cloud/playback";
 export const MAX_STATE_BYTES = 14 * 1024;
+import { projectPlayback, canPredictPlayback } from "./plan.js";
 
 const clamp = (v, min, max) => Math.min(max, Math.max(min, Number(v) || 0));
 const cleanFolder = (name) => String(name || "").replace(/[\u0000-\u001f]/g, "").trim().slice(0, 24);
@@ -54,12 +55,12 @@ export function currentPosition(p, now = Date.now()) {
   return Math.max(0, p.position + (p.playing ? (now - p.anchor) / 1000 : 0));
 }
 
-export function publicNow(state) {
-  const p = state.playback;
+export function publicNow(state, now = Date.now()) {
+  const p = projectPlayback(state, now);
   const item = state.playlist.find((t) => t.id === p.trackId) || null;
   const hidden = state.settings.hideTitle;
   return {
-    serverTime: Date.now(),
+    serverTime: now,
     hidden,
     playback: { ...p },
     track: item ? {
@@ -92,6 +93,9 @@ export function publicState(s) {
 
 /** 相对原 Node 版保持指令名称，原来的 UI 不需要重新画。 */
 export function applyCommand(state, cmd, now = Date.now()) {
+  // 完整且具有已知时长的歌单会由每个设备本地预测自然切歌。
+  // 保留旧 GM 客户端的 ended 请求兼容，但不能让它重写已预测的进度。
+  if (cmd.type === "ended" && canPredictPlayback(state)) return state;
   const s = structuredClone(state);
   const p = s.playback;
   const oldPosition = () => currentPosition(p, now);
