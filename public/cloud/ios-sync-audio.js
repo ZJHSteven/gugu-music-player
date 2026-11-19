@@ -119,7 +119,7 @@ export class IosSyncAudio {
   async prepare(now = this.getNow()) {
     const track = now?.track;
     if (this.closed || !track?.hash) return;
-    if (this.trackHash === track.hash) {
+    if (this.trackHash === track.hash && (this.ready || this.loading)) {
       this.applyRoomState(now);
       return;
     }
