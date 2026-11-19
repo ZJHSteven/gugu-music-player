@@ -9,11 +9,13 @@
  */
 import { CHUNK_SIZE, MAX_AUDIO_SIZE, HASH_RE, decodeChunk, encodeChunk } from "./wire.js";
 import { getAudio, putAudio, digest } from "./storage.js";
+import { prioritizeTracks } from "./request-priority.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 每八个 256 KiB 分块才要求一次确认：窗口约 2 MiB。
 // 背压比逐块确认省掉 7/8 的小控制包，并避免慢玩家缓存过多待处理帧。
 const ACK_WINDOW = 8;
+const MAX_SIMULTANEOUS_DOWNLOADS = 2;
 
 export class RelayClient {
   constructor(roomId, secret, onFile = () => {}, onError = () => {}) {
@@ -33,6 +35,9 @@ export class RelayClient {
     this.serving = new Set();
     this.stopped = false;
     this.reconnectDelay = 500;
+    this.priorityTrackId = null;
+    this.unavailable = new Set();
+    this.updateGeneration = 0;
     // 同一个 Owlbear 房间会在同源的弹窗和后台 iframe 中各开一条 DO 连接。
     // 两者共享 OPFS/IndexedDB 文件，但不共享 JavaScript 内存状态。
     // 只广播已存入本地的音频 SHA-256，避免另一个 iframe 再次请求公网音频。
@@ -57,13 +62,31 @@ export class RelayClient {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(data));
   }
 
-  async updateTracks(tracks) {
-    this.tracks = (tracks || []).filter((t) => HASH_RE.test(t.hash));
+  async updateTracks(tracks, currentTrackId = this.priorityTrackId) {
+    const generation = ++this.updateGeneration;
+    this.priorityTrackId = currentTrackId;
+    const ordered = prioritizeTracks(
+      (tracks || []).filter((t) => HASH_RE.test(t.hash)), currentTrackId
+    );
     const owned = new Set();
-    for (const t of this.tracks) {
+    for (const t of ordered) {
       if (await getAudio(t.hash)) owned.add(t.hash);
     }
-    this.owned = owned;
+    // 多次 onMetadataChange 可能并行扫描 OPFS。过期异步结果绝不可
+    // 把刚加入歌单的歌曲、目前优先的歌曲顺序覆盖回旧状态。
+    if (this.stopped || generation !== this.updateGeneration) return;
+    this.tracks = ordered;
+    this.owned = new Set([
+      ...owned, ...[...this.owned].filter((hash) => ordered.some((t) => t.hash === hash)),
+    ]);
+    const active = new Set(ordered.map((t) => t.hash));
+    for (const hash of [...this.requested]) {
+      if (!active.has(hash)) {
+        this.requested.delete(hash);
+        this.incoming.delete(hash);
+        this.clearTransferTimeout(hash);
+      }
+    }
     // 曲目状态更新时若文件早已由兄弟 iframe 保存，则清除仍在等待的
     // 请求和 30 秒重试定时器，避免本地已有文件仍反复唤醒 DO。
     for (const hash of owned) {
@@ -71,14 +94,24 @@ export class RelayClient {
       this.incoming.delete(hash);
       this.clearTransferTimeout(hash);
     }
-    this.send({ t: "have", hashes: [...owned] });
-    for (const t of this.tracks) {
-      if (!owned.has(t.hash)) this.request(t.hash);
+    this.send({ t: "have", hashes: [...this.owned] });
+    this.pumpRequests();
+  }
+
+  pumpRequests() {
+    if (this.stopped || this.ws?.readyState !== WebSocket.OPEN) return;
+    // 仅同时下载当前歌曲和最多一首预取歌曲，防止大歌单抢占
+    // 刚加入的玩家有限的网络带宽，也降低 DO 的瞬时传输请求数。
+    for (const track of this.tracks) {
+      if (this.requested.size >= MAX_SIMULTANEOUS_DOWNLOADS) break;
+      if (this.unavailable.has(track.hash)) continue;
+      this.request(track.hash);
     }
   }
 
   request(hash) {
-    if (!HASH_RE.test(hash) || this.owned.has(hash) || this.requested.has(hash)) return;
+    if (!HASH_RE.test(hash) || this.owned.has(hash) || this.requested.has(hash) ||
+        this.unavailable.has(hash) || this.requested.size >= MAX_SIMULTANEOUS_DOWNLOADS) return;
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     this.requested.add(hash);
     this.send({ t: "need", hash });
@@ -146,11 +179,12 @@ export class RelayClient {
     ws.binaryType = "arraybuffer";
     ws.onopen = () => {
       this.reconnectDelay = 500;
+      this.unavailable.clear();
       this.requested.clear();
       this.incoming.clear();
       for (const timeout of this.transferTimeouts.values()) clearTimeout(timeout);
       this.transferTimeouts.clear();
-      this.updateTracks(this.tracks).catch(this.onError);
+      this.updateTracks(this.tracks, this.priorityTrackId).catch(this.onError);
     };
     ws.onmessage = (e) => {
       if (typeof e.data === "string") this.onControl(e.data);
@@ -182,6 +216,7 @@ export class RelayClient {
     this.clearTransferTimeout(hash);
     this.send({ t: "have", hashes: [...this.owned] });
     this.localBus?.postMessage({ t: "saved", hash });
+    this.pumpRequests();
   }
 
   /**
@@ -202,6 +237,7 @@ export class RelayClient {
     this.send({ t: "have", hashes: [...this.owned] });
     // 播放器先前可能因找不到本地曲目而停在缓冲，直接重新加载。
     if (firstSeen) this.onFile(hash);
+    this.pumpRequests();
   }
 
   onControl(raw) {
@@ -225,8 +261,9 @@ export class RelayClient {
       }
       case "available":
         for (const hash of msg.hashes || []) {
-          if (this.tracks.some((t) => t.hash === hash)) this.request(hash);
+          if (this.tracks.some((t) => t.hash === hash)) this.unavailable.delete(hash);
         }
+        this.pumpRequests();
         break;
       case "serve":
         this.serve(msg.hash, msg.to).catch(this.onError);
@@ -234,6 +271,8 @@ export class RelayClient {
       case "unavailable":
         this.requested.delete(msg.hash);
         this.clearTransferTimeout(msg.hash);
+        this.unavailable.add(msg.hash);
+        this.pumpRequests();
         break;
       case "done":
         // 内容收集以 total/index 为准。done 只是源端完成发送，不等于文件验收成功。
@@ -324,6 +363,7 @@ export class RelayClient {
 
   close() {
     this.stopped = true;
+    this.updateGeneration++;
     this.localBus?.close();
     this.cancelAcks();
     for (const timeout of this.transferTimeouts.values()) clearTimeout(timeout);

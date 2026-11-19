@@ -128,7 +128,7 @@ export class CloudBridge {
       );
       this.relay.connect();
     }
-    this.relay?.updateTracks(state.playlist).catch(console.warn);
+    this.relay?.updateTracks(state.playlist, state.playback?.trackId).catch(console.warn);
     this.emit();
   }
 
