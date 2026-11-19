@@ -318,6 +318,24 @@ function nowCard(seekable) {
   </div>`;
 }
 
+/**
+ * iOS 用户激活入口：只允许一次性开启本机声音，不提供 PLAYER
+ * 快进/暂停/切歌；播放位置由 GM 房间统一时间锚点决定。
+ */
+function iosSyncButtonHtml() {
+  if (!window.BARD_CLOUD || !iosAudio || !S.now?.track) return "";
+  return `<section class="ios-sync-panel">
+    <button class="btn primary block" data-act="ios-enable">开启并同步房间声音</button>
+    <div class="ios-sync-status" data-ios-sync-status>
+      ${esc(iosFollowerStatus?.error ||
+        (iosFollowerStatus?.active ? "正在按 GM 时间表同步播放" :
+          iosFollowerStatus?.ready ? "音频已就绪，点击开启声音" :
+            "等待本地缓存完成"))}
+    </div>
+    <div class="ios-sync-hint">只有 GM 能暂停、切歌和拖动进度，此处不会改变房间播放。</div>
+  </section>`;
+}
+
 function gmView() {
   const p = S.now?.playback;
   const list = S.state?.playlist || [];
@@ -351,7 +369,8 @@ function gmView() {
     : S.upd?.hasUpdate
       ? `<div class="upd-banner"><span>发现新版本 ${esc(S.upd.latest)}</span><span class="upd-hint">${S.upd.autoUpdate ? "正在后台下载…" : "可在设置里手动更新"}</span></div>`
       : "";
-  return noticeHtml() + updTip + nowCard(true) + transport + blocked + tabs + body;
+  return noticeHtml() + updTip + nowCard(true) +
+    iosSyncButtonHtml() + transport + blocked + tabs + body;
 }
 
 /** 插件自带的确认框：OBR 的 iframe 里 window.confirm/prompt 会被静默屏蔽。 */
@@ -508,15 +527,12 @@ function settingsView() {
 function playerView() {
   const hasTrack = Boolean(S.now?.track);
   const vol = Math.round((S.status.volume ?? 0.85) * 100);
-  const iosButton = window.BARD_CLOUD && iosAudio && hasTrack
-    ? '<button class="btn block" data-act="ios-native" style="margin-bottom:12px">iPhone 无声？使用原生播放器</button>'
-    : "";
   // 房间还没人控制：给主持一个入口（OBR 偶尔会把 GM 报成 PLAYER）
   const canClaim = !S.now?.owner;
   return `
-  ${iosButton}
   ${nowCard(false)}
-  ${S.status.blocked ? `<button class="unlock" data-act="unlock">${icon("volume")}开启声音</button>` : ""}
+  ${iosSyncButtonHtml()}
+  ${S.status.blocked && !iosAudio ? `<button class="unlock" data-act="unlock">${icon("volume")}开启声音</button>` : ""}
   ${
     canClaim
       ? `<button class="btn block" data-act="reclaim" style="margin-bottom:12px">我是主持，取得播放控制权</button>`
