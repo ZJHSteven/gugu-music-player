@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { makeDiagnosticReport } from "../../public/cloud/diagnostics.js";
+import { CLOUD_RELEASE_VERSION } from "../../public/cloud/release-version.js";
 
 test("报告可见下载、播放器、服务器状态但不会泄露房间密钥与歌名", () => {
   const secret = "a".repeat(32);
@@ -30,4 +31,25 @@ test("报告可见下载、播放器、服务器状态但不会泄露房间密�
   for (const data of [room, "PRIVATE-SONG", "PRIVATE-PLAYER"]) {
     assert.ok(!text.includes(data), "不能泄漏用户私密字段：" + data);
   }
+});
+
+test("iOS Chrome 浏览器标签、诊断版本和失败阶段与真实情况一致", () => {
+  const text = makeDiagnosticReport({
+    userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 26_6 like Mac OS X) " +
+      "AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/155.0 Mobile/15E148 Safari/604.1",
+    engine: { relay: { events: [
+      { type: "failure", at: "2026-11-19T17:56:00.000Z",
+        phase: "integrity", reason: "hash-mismatch", hash: "6182290c3c" },
+      { type: "verified", at: "2026-11-19T17:56:01.000Z",
+        storage: "memory", bytes: 2188046 },
+    ] } },
+  });
+  const report = JSON.parse(text.slice(text.indexOf("{")));
+  assert.equal(report.version, CLOUD_RELEASE_VERSION);
+  assert.equal(report.browser, "Chrome");
+  assert.equal(report.system, "iOS/iPadOS");
+  assert.equal(report.engine.kind, "unavailable");
+  assert.equal(report.relayInAudioEngine.recentEvents[0].phase, "integrity");
+  assert.equal(report.relayInAudioEngine.recentEvents[0].reason, "hash-mismatch");
+  assert.equal(report.relayInAudioEngine.recentEvents[1].storage, "memory");
 });
