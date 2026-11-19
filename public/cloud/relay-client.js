@@ -33,6 +33,19 @@ export class RelayClient {
     this.serving = new Set();
     this.stopped = false;
     this.reconnectDelay = 500;
+    // 同一个 Owlbear 房间会在同源的弹窗和后台 iframe 中各开一条 DO 连接。
+    // 两者共享 OPFS/IndexedDB 文件，但不共享 JavaScript 内存状态。
+    // 只广播已存入本地的音频 SHA-256，避免另一个 iframe 再次请求公网音频。
+    this.localBus = null;
+    try {
+      this.localBus = new BroadcastChannel(`gugu-cloud:audio:${roomId}`);
+      this.localBus.onmessage = (event) => {
+        if (event.data?.t !== "saved") return;
+        this.localFileSaved(event.data.hash).catch(this.onError);
+      };
+    } catch {
+      // 隐私限制等环境可能不提供 BroadcastChannel，仍可继续以原流程下载。
+    }
   }
 
   url() {
@@ -51,6 +64,13 @@ export class RelayClient {
       if (await getAudio(t.hash)) owned.add(t.hash);
     }
     this.owned = owned;
+    // 曲目状态更新时若文件早已由兄弟 iframe 保存，则清除仍在等待的
+    // 请求和 30 秒重试定时器，避免本地已有文件仍反复唤醒 DO。
+    for (const hash of owned) {
+      this.requested.delete(hash);
+      this.incoming.delete(hash);
+      this.clearTransferTimeout(hash);
+    }
     this.send({ t: "have", hashes: [...owned] });
     for (const t of this.tracks) {
       if (!owned.has(t.hash)) this.request(t.hash);
@@ -68,9 +88,17 @@ export class RelayClient {
   /** 在浏览器侧检测断流：不会定时唤醒 DO；只在确实缺失文件时尝试重新取源。 */
   watchTransfer(hash) {
     this.clearTransferTimeout(hash);
-    const timer = setTimeout(() => {
+    const timer = setTimeout(async () => {
       this.transferTimeouts.delete(hash);
       if (this.stopped || this.owned.has(hash)) return;
+      // 可能刚好错过了其他 iframe 的广播。仅在本次重传前再查一次本地
+      // OPFS/IDB；如果文件已有完整副本，就不需要再次向公网请求。
+      try {
+        if (await getAudio(hash)) {
+          await this.localFileSaved(hash);
+          return;
+        }
+      } catch (error) { this.onError(error); }
       // 旧源可能已下线，清理不完整缓存，再从当前在线节点重新请求。
       this.requested.delete(hash);
       this.incoming.delete(hash);
@@ -149,7 +177,31 @@ export class RelayClient {
   async announce(hash) {
     if (!HASH_RE.test(hash) || !(await getAudio(hash))) return;
     this.owned.add(hash);
+    this.requested.delete(hash);
+    this.incoming.delete(hash);
+    this.clearTransferTimeout(hash);
     this.send({ t: "have", hashes: [...this.owned] });
+    this.localBus?.postMessage({ t: "saved", hash });
+  }
+
+  /**
+   * 收到同源兄弟 iframe 保存文件的通知。
+   * 不直接信任广播数据，而是校验当前房间的歌单确实引用该摘要，
+   * 且共享 OPFS/IndexedDB 已能读取该文件，之后才宣布自己拥有副本。
+   */
+  async localFileSaved(hash) {
+    if (this.stopped || !HASH_RE.test(hash) ||
+        !this.tracks.some((track) => track.hash === hash)) return;
+    const file = await getAudio(hash);
+    if (!file || this.stopped) return;
+    const firstSeen = !this.owned.has(hash);
+    this.owned.add(hash);
+    this.requested.delete(hash);
+    this.incoming.delete(hash);
+    this.clearTransferTimeout(hash);
+    this.send({ t: "have", hashes: [...this.owned] });
+    // 播放器先前可能因找不到本地曲目而停在缓冲，直接重新加载。
+    if (firstSeen) this.onFile(hash);
   }
 
   onControl(raw) {
@@ -228,6 +280,14 @@ export class RelayClient {
     const t = this.tracks.find((t) => t.hash === header.hash);
     if (!t || t.size > MAX_AUDIO_SIZE || !Number.isSafeInteger(t.size)) return;
     if (header.total !== Math.ceil(t.size / CHUNK_SIZE)) return;
+    if (this.owned.has(header.hash)) {
+      // 旧请求可能已经在 DO 转发队列里，仍要对分组尾块 ACK，
+      // 否则发送者会无谓地等待 30 秒才能停止旧传输。
+      if ((header.index + 1) % ACK_WINDOW === 0 || header.index + 1 === header.total) {
+        this.send({ t: "ack", hash: header.hash, to: header.from, index: header.index });
+      }
+      return;
+    }
     let rec = this.incoming.get(header.hash);
     if (!rec) {
       rec = { chunks: new Array(header.total), size: 0, complete: false };
@@ -264,6 +324,7 @@ export class RelayClient {
 
   close() {
     this.stopped = true;
+    this.localBus?.close();
     this.cancelAcks();
     for (const timeout of this.transferTimeouts.values()) clearTimeout(timeout);
     this.transferTimeouts.clear();
