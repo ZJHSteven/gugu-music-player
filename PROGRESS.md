@@ -1,5 +1,12 @@
 # 云端版最新状态（2026-11-20）
 
+## 2026-11-20：v3.3.1 元数据容量诊断已正式发布（最高优先级）
+
+- 生产域名 `https://music.zjhstudio.com` 已从v3.3.0升级到 **v3.3.1**。正式Cloudflare Worker版本 `4e2834f2-f129-4436-b372-d89ff6690710`，Cloudflare API核实最新部署（2026-11-20T09:02:26Z）占 **100% 流量**。旧v3.3.0 `f2e9edc2-3c52-4458-9b7d-42bbfb46d35a` 可作回滚点。
+- 本次修复不修改GM同步与音频协议，只补匿名 `roomMatchCode`、元数据`totalBytes/freeBytes/entryCount/musicKeyPresent/musicValueKind/pointerRoomBytes/pointerFits`、GM写入次数/失败阶段；当Owlbear连最小指针都写不进去时，`commit`在写DO前拒绝并展示准确容量错误，避免产生孤儿快照。
+- 新版Cloud 60/60、Node42/42、EdgeUI61/61全部通过；生产HTTP200/CORS 6/6，通过线上全部26个可执行/关键静态资源的SHA256逐文件比对，**26/26与本次构建完全一致**，manifest.version确认为3.3.1。
+- 梅林当前旧报告仍是v3.3.0，只证明当前房间没得到咕咕会话。必须收集梅林v3.3.1新报告（匿名房间匹配码、元数据字节数/键存在与否/指针可写性）；与该房间GM侧新诊断比较，才能区分房间不一致、GM没有写入、写入因为共享16KiB拒绝、值不合法等。实际Root Cause尚未锁定，不声称本次诊断升级已经让梅林出声。
+
 ## 2026-11-20：梅林跨房间无会话 / Room Metadata 接近满额诊断
 
 - 梅林2026-11-20 15:35提供了正式v3.3.0 Edge无痕PLAYER报告：SDK ready=true、roomIdPresent=true、audioEngineResponded=true；getMetadata成功4次、失败0次，metadataChangeEvents=0、lastReadHadMusic=false、hasMusicSession=false。确认不会进入DO音频中继，旧版SDK握手故障此次不成立。
