@@ -8,6 +8,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { CLOUD_RELEASE_VERSION } from "../public/cloud/release-version.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = path.join(root, "public");
@@ -29,7 +30,7 @@ manifest.description = "为 Owlbear Rodeo 房间共享背景音乐与音效：GM
 // v3.3.0 开发版已整合正式生产v3.2.6（iOS提前授权、按钮稳定、矮屏滚动）
 // 及未发布的全局时间表、闭环纠偏、GM升权、16KiB快照降级与ZIP备份。
 // 不得把自动化模拟当成Safari真机的音频授权/后台连续播放已验收。
-manifest.version = "3.3.0";
+manifest.version = CLOUD_RELEASE_VERSION;
 
 // 真正的 Owlbear 房间安装时还发现：宿主对相对路径 ./icon.png 的解析
 // 偶尔变成 https://music.zjhstudio.com./icon.png（主机名末尾多出一个点）。

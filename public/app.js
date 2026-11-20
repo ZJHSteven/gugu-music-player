@@ -259,6 +259,7 @@ async function generateDiagnostics() {
       sdkReady: window.__bardIdentity?.ready,
       roomIdPresent: Boolean(window.__bardIdentity?.roomIdPresent),
       engineResponded: Boolean(background),
+      roomMetadata: cloud?.startupDiagnostics?.() || null,
       hasMusicSession: Boolean(cloud?.state),
       revision: cloud?.state?.rev ?? null,
       trackLoaded: Boolean(S.now?.track),
@@ -579,8 +580,8 @@ function playerView() {
   // 也不能展示实际上永远无法成功的「我是主持」按钮。
   // 咕咕云版必须由本房间 GM 启动，才会创建自己的歌单与播放时间轴。
   if (window.BARD_CLOUD && !S.now) return `
-    <div class="empty">本房间尚未启用咕咕点歌台的播放会话</div>
-    <div class="player-note">请房主在本房间打开「咕咕点歌台 · 云端版」，通过本插件上传歌曲并点击播放。其他音乐扩展的歌单不会自动同步到咕咕。</div>
+    <div class="empty">尚未取得本房间的咕咕音乐会话</div>
+    <div class="player-note">可能是房主尚未使用本插件，也可能是当前设备的 Owlbear 房间元数据尚未同步。已安排有限次自动重读；如果房主明确正在播放，请打开诊断并复制报告，不要当成音频下载失败。</div>
     <div class="field">
       <div class="label">我的音量 <span class="hint">${vol}%</span></div>
       <div class="vol"><input type="range" min="0" max="100" value="${vol}" data-act="vol" /></div>

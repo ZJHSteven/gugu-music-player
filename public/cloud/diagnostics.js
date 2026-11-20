@@ -8,6 +8,7 @@
  *    两者可能包含房间密钥、个人身份和其他扩展的敏感数据。
  * 4. 浏览器的媒体错误与服务器的「已转发字节」必须明确区分。
  */
+import { CLOUD_RELEASE_VERSION } from "./release-version.js";
 
 function finite(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -21,7 +22,7 @@ function short(value, max = 12) {
 function eventSummary(value) {
   if (!Array.isArray(value)) return [];
   const types = new Set([
-    "connected", "disconnected", "socket-error", "identified",
+    "connected", "disconnected", "socket-error", "identified", "failure",
     "request", "timeout", "error", "unavailable", "sent-queued", "verified",
     "media-error", "playing", "pause", "waiting", "seeking", "play-rejected",
     "native-loop", "plan-transition", "next-preload", "clock-recovery",
@@ -34,6 +35,12 @@ function eventSummary(value) {
     bytes: finite(e.bytes),
     code: finite(e.code),
     position: finite(e.position),
+    phase: ["wire", "integrity", "storage", "notification"].includes(e.phase)
+      ? e.phase : null,
+    reason: ["invalid-frame", "hash-mismatch", "storage-failed", "processing-failed"].includes(e.reason)
+      ? e.reason : null,
+    storage: ["opfs", "indexeddb", "memory"].includes(e.storage)
+      ? e.storage : null,
   }));
 }
 
@@ -114,8 +121,8 @@ function serverStatus(server) {
 
 function environment(ua = "") {
   const name = /QQ\//.test(ua) || /MQQBrowser/.test(ua) ? "QQ 内置浏览器" :
-    /Firefox\//.test(ua) ? "Firefox" :
-    /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" :
+    /Firefox\/|FxiOS\//.test(ua) ? "Firefox" :
+    /Edg\/|EdgiOS\//.test(ua) ? "Edge" : /Chrome\/|CriOS\//.test(ua) ? "Chrome" :
       /Safari\//.test(ua) ? "Safari" : "其他浏览器";
   const os = /Android/i.test(ua) ? "Android" : /iPhone|iPad|iPod/i.test(ua) ?
     "iOS/iPadOS" : /Windows/i.test(ua) ? "Windows" :
@@ -131,7 +138,7 @@ export function makeDiagnosticReport(source) {
   const p = source || {};
   const engine = p.engine || {};
   const report = {
-    version: "3.3.0",
+    version: CLOUD_RELEASE_VERSION,
     generatedAt: new Date().toISOString(),
     ...environment(p.userAgent),
     roomRole: p.role === "GM" ? "GM" :
@@ -139,6 +146,14 @@ export function makeDiagnosticReport(source) {
     owlBearSdkReady: p.sdkReady === true,
     owlBearRoomIdPresent: p.roomIdPresent === true,
     audioEngineResponded: Boolean(p.engineResponded),
+    roomMetadata: p.roomMetadata ? {
+      roomIdPresent: Boolean(p.roomMetadata.roomIdPresent),
+      metadataReads: finite(p.roomMetadata.metadataReads),
+      metadataReadFailures: finite(p.roomMetadata.metadataReadFailures),
+      metadataChangeEvents: finite(p.roomMetadata.metadataChangeEvents),
+      lastReadHadMusic: Boolean(p.roomMetadata.lastReadHadMusic),
+      sessionReady: Boolean(p.roomMetadata.sessionReady),
+    } : null,
     hasMusicSession: Boolean(p.hasMusicSession),
     revision: finite(p.revision),
     trackLoaded: Boolean(p.trackLoaded),

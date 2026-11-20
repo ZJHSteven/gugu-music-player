@@ -65,6 +65,21 @@ export class CloudBridge {
     this.initialized = false;
     this.snapshotPointer = null;
     this.initializingState = null;
+    this.metadataReads = 0;
+    this.metadataReadFailures = 0;
+    this.metadataChangeEvents = 0;
+    this.lastReadHadMusic = false;
+  }
+
+  startupDiagnostics() {
+    return {
+      roomIdPresent: Boolean(this.roomId),
+      metadataReads: this.metadataReads,
+      metadataReadFailures: this.metadataReadFailures,
+      metadataChangeEvents: this.metadataChangeEvents,
+      lastReadHadMusic: this.lastReadHadMusic,
+      sessionReady: Boolean(this.state),
+    };
   }
 
   async isGM() {
@@ -75,9 +90,13 @@ export class CloudBridge {
     if (this.initialized) return this;
     this.initialized = true;
     this.OBR.room.onMetadataChange((metadata) => {
-      this.receiveMetadata(metadata).catch((error) => {
-        console.warn("[gugu-cloud] 读取房间歌单失败", error);
-      });
+      this.metadataChangeEvents++;
+      this.receiveMetadata(metadata)
+        .then(() => { this.lastReadHadMusic = Boolean(this.state); })
+        .catch((error) => {
+          this.metadataReadFailures++;
+          console.warn("[gugu-cloud] 读取房间歌单失败", error);
+        });
     });
     // Owlbear 可以在页面已经启动以后把 PLAYER 提升成 GM。
     // 旧实现只在 start() 时查一次角色，导致提升权限后上传和建分类均显示
@@ -117,7 +136,11 @@ export class CloudBridge {
         }
       }
     });
-    await this.refresh();
+    try { await this.refresh(); }
+    catch (error) {
+      // 一次性getMetadata失败不应阻止有限重试、也不应伪称空歌单。
+      console.warn("[gugu-cloud] 初次读取房间状态失败，后续补偿重读", error);
+    }
     // 某些复杂房间（梅林的房间尤其明显）在扩展首次载入时，Owlbear
     // SDK 虽然就绪，但第一次 getMetadata() 尚未含其他客户端已写入的状态。
     // 无状态不等于空房间：只在启动后的有限时间重读 3 次；如果 GM
@@ -254,8 +277,15 @@ export class CloudBridge {
   }
 
   async refresh() {
-    const data = await this.OBR.room.getMetadata();
-    await this.receiveMetadata(data);
+    this.metadataReads++;
+    try {
+      const data = await this.OBR.room.getMetadata();
+      await this.receiveMetadata(data);
+      this.lastReadHadMusic = Boolean(this.state);
+    } catch (error) {
+      this.metadataReadFailures++;
+      throw error;
+    }
   }
 
   getState() {

@@ -359,7 +359,15 @@ export class RelayClient {
   }
 
   async onChunk(raw) {
-    const { header, bytes } = decodeChunk(raw);
+    let decoded;
+    try {
+      decoded = decodeChunk(raw);
+    } catch (error) {
+      // 切勿把原始二进制帧/房间地址写入诊断，只标识失败阶段。
+      this.note("failure", { phase: "wire", reason: "invalid-frame" });
+      throw error;
+    }
+    const { header, bytes } = decoded;
     const t = this.tracks.find((t) => t.hash === header.hash);
     if (!t || t.size > MAX_AUDIO_SIZE || !Number.isSafeInteger(t.size)) return;
     if (header.total !== Math.ceil(t.size / CHUNK_SIZE)) return;
@@ -389,21 +397,38 @@ export class RelayClient {
     if (rec.size !== t.size || rec.chunks.some((part) => !part)) return;
     rec.complete = true;
     const blob = new Blob(rec.chunks, { type: t.mime || "audio/mpeg" });
+    let phase = "integrity";
     try {
-      if ((await digest(blob)) !== header.hash) throw new Error("接收音频的 SHA-256 不一致");
-      await putAudio(header.hash, blob);
+      if ((await digest(blob)) !== header.hash) {
+        const error = new Error("接收音频的 SHA-256 不一致");
+        error.code = "HASH_MISMATCH";
+        throw error;
+      }
+      phase = "storage";
+      // 保存目标可能是 OPFS、IndexedDB 或受限隐私模式下的临时内存。
+      // 每一种都必须先完成摘要校验，随后才允许宣称文件可用。
+      const storedIn = await putAudio(header.hash, blob);
       this.owned.add(header.hash);
       this.requested.delete(header.hash);
       this.clearTransferTimeout(header.hash);
       await this.announce(header.hash);
+      phase = "notification";
       // DO 可区分“服务器转发了字节”和“接收端校验并保存成功”。
       // 这依旧不等于实际已经听到声音，播放错误由本地音频诊断单独记录。
       this.send({ t: "verified", hash: header.hash });
       this.metrics.verified++;
       this.note("verified", { hash: header.hash.slice(0, 10),
-        bytes: blob.size });
+        bytes: blob.size, storage: storedIn });
       this.onFile(header.hash);
     } catch (err) {
+      // 原先诊断只有「Error」，即使9/9块已收到也无法区分
+      // 摘要不一致、两类持久存储拒绝与后续通知失败。
+      this.note("failure", {
+        hash: header.hash.slice(0, 10),
+        phase,
+        reason: err?.code === "HASH_MISMATCH" ? "hash-mismatch" :
+          phase === "storage" ? "storage-failed" : "processing-failed",
+      });
       this.requested.delete(header.hash);
       this.clearTransferTimeout(header.hash);
       this.onError(err);

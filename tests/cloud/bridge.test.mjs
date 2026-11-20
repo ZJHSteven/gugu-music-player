@@ -6,7 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { CloudBridge } from "../../public/cloud/bridge.js";
-import { applyCommand } from "../../public/cloud/state.js";
+import { applyCommand, createState, METADATA_KEY } from "../../public/cloud/state.js";
 
 class FakeWebSocket {
   static OPEN = 1;
@@ -20,6 +20,38 @@ class FakeWebSocket {
   send(data) { this.sent.push(data); }
   close() { this.readyState = 3; this.onclose?.(); }
 }
+
+test("启动时Owlbear首轮元数据为空，玩家随后可以补偿读取已存在的音乐会话", async () => {
+  globalThis.location = new URL("https://music.zjhstudio.com/");
+  globalThis.WebSocket = FakeWebSocket;
+  let roomMetadata = {};
+  let fetchCount = 0;
+  const roomId = "merlin-v33-incognito";
+  const player = new CloudBridge({
+    room: { id: roomId,
+      getMetadata: async () => { fetchCount++; return structuredClone(roomMetadata); },
+      onMetadataChange: () => {},
+    },
+    player: { getRole: async () => "PLAYER", onChange: () => {} },
+    broadcast: { onMessage: () => {}, sendMessage: async () => {} },
+  }, roomId);
+  try {
+    await player.start();
+    assert.equal(player.state, null);
+    assert.equal(player.startupDiagnostics().metadataReads, 1);
+    roomMetadata = { [METADATA_KEY]: createState("a".repeat(32)) };
+    // 无需等真实2秒：测试直接触发有限的补偿重读接口；
+    // 验证正常玩家恢复后 Relay 会读取同一份房间元数据。
+    await player.refresh();
+    assert.equal(player.state.secret, "a".repeat(32));
+    assert.equal(player.startupDiagnostics().sessionReady, true);
+    assert.equal(player.startupDiagnostics().lastReadHadMusic, true);
+    assert.equal(fetchCount, 2);
+  } finally {
+    player.relay?.close();
+    clearInterval(player.clockMaintenance);
+  }
+});
 
 test("GM 控制歌单通过 OBR Metadata 传播，玩家无权修改，无播放 HTTP/DO 消息", async () => {
   globalThis.location = new URL("https://music.zjhstudio.com/");
