@@ -6,6 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { CloudBridge } from "../../public/cloud/bridge.js";
+import { createState, METADATA_KEY } from "../../public/cloud/state.js";
 
 class FakeWebSocket {
   static OPEN = 1;
@@ -19,6 +20,36 @@ class FakeWebSocket {
   send(data) { this.sent.push(data); }
   close() { this.readyState = 3; this.onclose?.(); }
 }
+
+test("玩家加入时首次房间元数据为空，之后可自行补偿读取到GM已存在的歌单", async () => {
+  globalThis.location = new URL("https://music.zjhstudio.com/");
+  globalThis.WebSocket = FakeWebSocket;
+  let roomMetadata = {};
+  const player = new CloudBridge({
+    room: {
+      id: "room-merlin-incognito",
+      getMetadata: async () => structuredClone(roomMetadata),
+      onMetadataChange: () => {},
+    },
+    player: { getRole: async () => "PLAYER" },
+    broadcast: { onMessage: () => {}, sendMessage: async () => {} },
+  }, "room-merlin-incognito");
+  player.startupRetryDelays = [10, 35];
+  try {
+    await player.start();
+    assert.equal(player.state, null);
+    assert.equal(player.startupDiagnostics().metadataReads, 1);
+    // 模拟Owlbear SDK接通后、未触发onMetadataChange时，元数据随后可读。
+    roomMetadata = { [METADATA_KEY]: createState("a".repeat(32)) };
+    await new Promise((resolve) => setTimeout(resolve, 110));
+    assert.equal(player.state.secret, "a".repeat(32));
+    assert.ok(player.startupDiagnostics().metadataReads >= 2);
+    assert.equal(player.startupDiagnostics().sessionReady, true);
+    assert.equal(player.startupDiagnostics().lastReadHadMusic, true);
+  } finally {
+    player.relay?.close();
+  }
+});
 
 test("GM 控制歌单通过 OBR Metadata 传播，玩家无权修改，无播放 HTTP/DO 消息", async () => {
   globalThis.location = new URL("https://music.zjhstudio.com/");

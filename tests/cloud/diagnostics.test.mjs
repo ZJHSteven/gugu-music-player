@@ -53,3 +53,23 @@ test("iOS Chrome 浏览器标签、诊断版本和失败阶段与真实情况一
   assert.equal(report.relayInAudioEngine.recentEvents[0].reason, "hash-mismatch");
   assert.equal(report.relayInAudioEngine.recentEvents[1].storage, "memory");
 });
+
+test("梅林无痕模式诊断能区分SDK就绪、房间身份与元数据未取得，不泄漏房间号", () => {
+  const realRoomId = "ROOM-SECRET-MERLIN-ROOM-2026";
+  const reportText = makeDiagnosticReport({
+    role: "PLAYER", sdkReady: true, roomIdPresent: true, engineResponded: true,
+    roomMetadata: { roomIdPresent: true, metadataReads: 2,
+      metadataReadFailures: 1, metadataChangeEvents: 0, lastReadHadMusic: false,
+      sessionReady: false, roomId: realRoomId },
+    hasMusicSession: false, roomId: realRoomId,
+  });
+  const report = JSON.parse(reportText.slice(reportText.indexOf("{")));
+  assert.equal(report.owlBearSdkReady, true);
+  assert.equal(report.owlBearRoomIdPresent, true);
+  assert.equal(report.audioEngineResponded, true);
+  assert.equal(report.roomMetadata.metadataReads, 2);
+  assert.equal(report.roomMetadata.lastReadHadMusic, false);
+  assert.equal(report.roomMetadata.sessionReady, false);
+  assert.equal(report.version, "3.2.8");
+  assert.ok(!reportText.includes(realRoomId));
+});
