@@ -1,5 +1,13 @@
 # 云端版最新状态（2026-11-20）
 
+## 2026-11-20：v3.3.0 **已经正式部署（最新权威记录）**
+
+- 用户明确要求不要将全部完成的功能永远留在未发布开发分支。已从已合并的 `feat/cloud-do-opfs@a1f7e93` 构建并正式部署 Cloudflare Worker `gugu-music-cloud`，自定义域名 `https://music.zjhstudio.com`；正式 **v3.3.0** Cloudflare Version ID **`f2e9edc2-3c52-4458-9b7d-42bbfb46d35a`**，Cloudflare API 查询最新 deployment（2026-11-20T06:13:23Z）确认 **100% 流量**。
+- 回滚点：原稳定线上 v3.2.8 **`86c242d5-e624-4d20-a8a7-3516552d0b98`**，仍保留 Cloudflare 版本；不可误报 v3.2.8 仍为当前线上。
+- 上线内容：v3.2.6/3.2.7/3.2.8 的 iOS 提前授权、下载后接续、12 秒按钮稳定、矮屏滚动、OPFS/IDB与96MiB临时内存回退、分阶段匿名诊断、SDK严格身份+有界重试、首次 Owlbear metadata 补偿读取；以及 v3.3 的 GM 统一时间表、预测自然切歌/预加载、30秒时钟校准、闭环偏差恢复、双GM时钟切换、满额歌单 DO 小型状态快照、ZIP原音频备份/恢复。
+- 发布前云版55/55、Node42/42、EdgeUI61/61、build/verify通过；发布后 `npm run verify:cloud:online` 在正式域名与 Owlbear Origin 下 **6/6 HTTP200且CORS**；公网逐文件 SHA-256 对比构建输出和线上 **25/25完全一致**，含 manifest、app、engine、SDK、全部关键 cloud 模块；`/room-state` 非法输入返回 HTTP400，证明 DO 快照入口路由经过真实 Worker。云端公开的 manifest.version 确认为3.3.0。
+- **代码发布已完成**；尚需真人 iPhone Safari/Chrome、P40 Firefox 与梅林 Edge 无痕在真实 Owlbear 房间验证是否真的发声、短曲长时间播放和同步。不能把测试通过宣称为真机音频无故障；这项真实跨设备验收应单列保留，不得再次阻止已有功能部署，发现实际故障再单独修补/回滚。
+
 ## 2026-11-20：生产版 v3.2.8 与未发布 v3.3 集成状态（此节优先）
 
 - **生产已上线 v3.2.8**：Cloudflare Worker Version ID `86c242d5-e624-4d20-a8a7-3516552d0b98`，Cloudflare API 验证该版本承接100%请求。新增梅林 Edge 无痕模式 SDK 严格身份校验、有界重试、首次房间元数据有限重读和匿名诊断；v3.2.7 的 iPhone 触屏滚动、临时内存缓存、错误分层和版本统一仍在。梅林本人仍需要重进房确认是否真的出声。
