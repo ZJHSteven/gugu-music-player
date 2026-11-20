@@ -73,3 +73,25 @@ test("梅林无痕模式诊断能区分SDK就绪、房间身份与元数据未�
   assert.equal(report.version, CLOUD_RELEASE_VERSION);
   assert.ok(!reportText.includes(realRoomId));
 });
+
+test("匿名诊断暴露房间容量、命名空间与最小指针可写性，但隐藏原始元数据", () => {
+  const rawRoom = "secret-owlbear-room-url-NOT-FOR-LOG";
+  const reportText = makeDiagnosticReport({
+    role: "PLAYER", roomMatchCode: "a3c3e21dd982", roomId: rawRoom,
+    roomMetadata: {
+      roomIdPresent: true, metadataReads: 4, metadataReadFailures: 0,
+      musicKeyPresent: false, musicValueKind: "missing",
+      totalBytes: 16316, entryCount: 5, freeBytes: 68,
+      pointerRoomBytes: 16483, pointerFits: false,
+      writeAttempts: 0, writeFailures: 0, lastWriteStage: "none",
+      secret: "NEVER-SHOW-THIS-SECRET",
+    },
+  });
+  const diag = JSON.parse(reportText.slice(reportText.indexOf("{")));
+  assert.equal(diag.roomMatchCode, "a3c3e21dd982");
+  assert.equal(diag.roomMetadata.totalBytes, 16316);
+  assert.equal(diag.roomMetadata.pointerFits, false);
+  assert.equal(diag.roomMetadata.musicValueKind, "missing");
+  assert.ok(!reportText.includes(rawRoom));
+  assert.ok(!reportText.includes("NEVER-SHOW-THIS-SECRET"));
+});

@@ -143,6 +143,8 @@ export function makeDiagnosticReport(source) {
     ...environment(p.userAgent),
     roomRole: p.role === "GM" ? "GM" :
       p.role === "PLAYER" ? "PLAYER" : "UNKNOWN",
+    roomMatchCode: /^[a-f0-9]{12}$/.test(p.roomMatchCode || "")
+      ? p.roomMatchCode : null,
     owlBearSdkReady: p.sdkReady === true,
     owlBearRoomIdPresent: p.roomIdPresent === true,
     audioEngineResponded: Boolean(p.engineResponded),
@@ -153,6 +155,20 @@ export function makeDiagnosticReport(source) {
       metadataChangeEvents: finite(p.roomMetadata.metadataChangeEvents),
       lastReadHadMusic: Boolean(p.roomMetadata.lastReadHadMusic),
       sessionReady: Boolean(p.roomMetadata.sessionReady),
+      totalBytes: finite(p.roomMetadata.totalBytes),
+      freeBytes: finite(p.roomMetadata.freeBytes),
+      entryCount: finite(p.roomMetadata.entryCount),
+      musicKeyPresent: p.roomMetadata.musicKeyPresent === true,
+      musicValueKind: ["missing", "direct-v1", "pointer-v2", "unrecognized"]
+        .includes(p.roomMetadata.musicValueKind) ? p.roomMetadata.musicValueKind : null,
+      pointerRoomBytes: finite(p.roomMetadata.pointerRoomBytes),
+      pointerFits: typeof p.roomMetadata.pointerFits === "boolean"
+        ? p.roomMetadata.pointerFits : null,
+      writeAttempts: finite(p.roomMetadata.writeAttempts),
+      writeFailures: finite(p.roomMetadata.writeFailures),
+      lastWriteStage: ["none", "success", "preflight", "pointer-capacity",
+        "snapshot-save", "room-write", "state-apply"]
+        .includes(p.roomMetadata.lastWriteStage) ? p.roomMetadata.lastWriteStage : null,
     } : null,
     hasMusicSession: Boolean(p.hasMusicSession),
     revision: finite(p.revision),

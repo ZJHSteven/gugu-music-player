@@ -22,6 +22,7 @@ import {
   ROOM_METADATA_LIMIT, ROOM_SNAPSHOT_THRESHOLD,
   encodedSize, isSnapshotPointer, saveRoomSnapshot, loadRoomSnapshot,
 } from "./room-snapshots.js";
+import { inspectRoomMetadata, estimatePointerRoomBytes } from "./metadata-inspection.js";
 import { RelayClient } from "./relay-client.js";
 import { MAX_AUDIO_SIZE } from "./wire.js";
 
@@ -69,6 +70,10 @@ export class CloudBridge {
     this.metadataReadFailures = 0;
     this.metadataChangeEvents = 0;
     this.lastReadHadMusic = false;
+    this.metadataInspection = null;
+    this.writeAttempts = 0;
+    this.writeFailures = 0;
+    this.lastWriteStage = "none";
   }
 
   startupDiagnostics() {
@@ -79,6 +84,10 @@ export class CloudBridge {
       metadataChangeEvents: this.metadataChangeEvents,
       lastReadHadMusic: this.lastReadHadMusic,
       sessionReady: Boolean(this.state),
+      ...this.metadataInspection,
+      writeAttempts: this.writeAttempts,
+      writeFailures: this.writeFailures,
+      lastWriteStage: this.lastWriteStage,
     };
   }
 
@@ -91,6 +100,7 @@ export class CloudBridge {
     this.initialized = true;
     this.OBR.room.onMetadataChange((metadata) => {
       this.metadataChangeEvents++;
+      this.metadataInspection = inspectRoomMetadata(metadata, METADATA_KEY);
       this.receiveMetadata(metadata)
         .then(() => { this.lastReadHadMusic = Boolean(this.state); })
         .catch((error) => {
@@ -280,6 +290,7 @@ export class CloudBridge {
     this.metadataReads++;
     try {
       const data = await this.OBR.room.getMetadata();
+      this.metadataInspection = inspectRoomMetadata(data, METADATA_KEY);
       await this.receiveMetadata(data);
       this.lastReadHadMusic = Boolean(this.state);
     } catch (error) {
@@ -304,31 +315,50 @@ export class CloudBridge {
 
   async commit(next) {
     if (!await this.isGM()) throw new Error("只有 Owlbear 房主能修改歌单和播放状态");
-    assertCloudStateSize(next);
-    const metadata = await this.OBR.room.getMetadata();
-    const totalBytes = encodedSize({ ...metadata, [METADATA_KEY]: next });
-    // 一旦迁移到 v2 就保持指针格式，不要因其他插件减少数据量来回振荡。
-    const usePointer = Boolean(this.snapshotPointer) ||
-      totalBytes > ROOM_SNAPSHOT_THRESHOLD;
-    if (usePointer) {
-      const pointer = await saveRoomSnapshot(this.roomId, next.secret, next);
-      // DO 快照先写好，之后才能通过 Owlbear GM 授权更新其指针。
-      // 绝不删除或覆盖其他扩展的任意 Metadata 键。
-      const pointerBytes = encodedSize({ ...metadata, [METADATA_KEY]: pointer });
-      if (pointerBytes > ROOM_METADATA_LIMIT) {
-        throw new Error(
-          `房间扩展共享元数据已占用 ${encodedSize(metadata)} 字节，剩余空间连咕咕的最小歌单指针也放不下。请房主清理其他扩展的多余数据。`
-        );
+    this.writeAttempts++;
+    let stage = "preflight";
+    try {
+      assertCloudStateSize(next);
+      const metadata = await this.OBR.room.getMetadata();
+      this.metadataInspection = inspectRoomMetadata(metadata, METADATA_KEY);
+      const totalBytes = encodedSize({ ...metadata, [METADATA_KEY]: next });
+      // 一旦迁移到 v2 就保持指针格式，不因其他插件变动而来回振荡。
+      const usePointer = Boolean(this.snapshotPointer) ||
+        totalBytes > ROOM_SNAPSHOT_THRESHOLD;
+      if (usePointer) {
+        // 先计算指针的真实占用，确认至少能塞进 Owlbear 共享16KiB。
+        // 旧顺序先写DO后发现指针放不下，会制造无人引用的孤儿快照。
+        stage = "pointer-capacity";
+        const pointerBytes = estimatePointerRoomBytes(metadata, METADATA_KEY, next.rev);
+        if (pointerBytes > ROOM_METADATA_LIMIT) {
+          throw new Error(
+            `房间已占用 ${encodedSize(metadata)} 字节，加入咕咕DO快照指针需 ${pointerBytes} 字节，但Owlbear总上限 ${ROOM_METADATA_LIMIT} 字节。请房主清理其他扩展的过量Metadata；仅扩大DO无法解决。`
+          );
+        }
+        stage = "snapshot-save";
+        const pointer = await saveRoomSnapshot(this.roomId, next.secret, next);
+        stage = "room-write";
+        await this.OBR.room.setMetadata({ [METADATA_KEY]: pointer });
+        this.snapshotPointer = pointer;
+        this.metadataInspection = inspectRoomMetadata(
+          { ...metadata, [METADATA_KEY]: pointer }, METADATA_KEY);
+      } else {
+        stage = "room-write";
+        await this.OBR.room.setMetadata({ [METADATA_KEY]: next });
+        this.metadataInspection = inspectRoomMetadata(
+          { ...metadata, [METADATA_KEY]: next }, METADATA_KEY);
       }
-      await this.OBR.room.setMetadata({ [METADATA_KEY]: pointer });
-      this.snapshotPointer = pointer;
-    } else {
-      await this.OBR.room.setMetadata({ [METADATA_KEY]: next });
+      stage = "state-apply";
+      await this.receiveState(next);
+      this.lastWriteStage = "success";
+      // Metadata 自带持久同步，Broadcast 只用于催促其他玩家立即更新。
+      this.OBR.broadcast.sendMessage(BROADCAST_CHANNEL, { t: "changed", rev: next.rev }).catch(console.warn);
+      return { state: this.getState(), now: this.getNow() };
+    } catch (error) {
+      this.writeFailures++;
+      this.lastWriteStage = stage;
+      throw error;
     }
-    await this.receiveState(next);
-    // Metadata 自带持久同步，Broadcast 只用于催促其他玩家立即更新。
-    this.OBR.broadcast.sendMessage(BROADCAST_CHANNEL, { t: "changed", rev: next.rev }).catch(console.warn);
-    return { state: this.getState(), now: this.getNow() };
   }
 
   /**

@@ -1,5 +1,13 @@
 # 云端版最新状态（2026-11-20）
 
+## 2026-11-20：梅林跨房间无会话 / Room Metadata 接近满额诊断
+
+- 梅林2026-11-20 15:35提供了正式v3.3.0 Edge无痕PLAYER报告：SDK ready=true、roomIdPresent=true、audioEngineResponded=true；getMetadata成功4次、失败0次，metadataChangeEvents=0、lastReadHadMusic=false、hasMusicSession=false。确认不会进入DO音频中继，旧版SDK握手故障此次不成立。
+- 用户提醒：梅林加入的是其他房间，先前该房间元数据已接近16KiB；正式Owlbear Room API文档限制整个房间metadata不得超过16kB，且各扩展共享。DO快照仅缩小咕咕完整歌单，仍必须能在Owlbear中写入一个最小指针，否则PLAYER无法定位DO。与“所有内容放进DO就不需要Owlbear一点空间”不同。
+- 当前日常Chrome中用户自己的The Cured Tying房间只读抽样：room metadata 4243B、4个键、咕咕state键存在、v1直存、rev6501，并不接近满额；这**不证明**梅林加入的是同一房间，不可据此宣告梅林问题不可能由容量导致。
+- 独立热修复工作树 `D:\Workspace\gugu-music-metadata-v331`，分支 `hotfix/room-metadata-diagnostics-v331`。v3.3.1增加匿名roomMatchCode（SHA256截断12hex，两端对照）、metadata总字节/剩余字节/键数/咕咕命名空间是否存在、direct-v1/pointer-v2/invalid状态及指针总需求量、能否装入16KiB；GM写入失败阶段/次数报告。未输出任何其他扩展的键值、房间ID或secret。
+- 真实边界专测：其他扩展占用16176字节、最小指针总共16343字节时可正常先写DO再写Owlbear指针；其他扩展占用16316字节、写入指针需16483字节时正确拒绝，而且不会先写DO制造孤儿快照。Cloud 60/60、Node42/42、EdgeUI61/61、v3.3.1 build/verify均已通过。现阶段不能将未拿到梅林新版roomMatchCode及meta尺寸的推断当成最终根因。
+
 ## 2026-11-20：v3.3.0 **已经正式部署（最新权威记录）**
 
 - 用户明确要求不要将全部完成的功能永远留在未发布开发分支。已从已合并的 `feat/cloud-do-opfs@a1f7e93` 构建并正式部署 Cloudflare Worker `gugu-music-cloud`，自定义域名 `https://music.zjhstudio.com`；正式 **v3.3.0** Cloudflare Version ID **`f2e9edc2-3c52-4458-9b7d-42bbfb46d35a`**，Cloudflare API 查询最新 deployment（2026-11-20T06:13:23Z）确认 **100% 流量**。

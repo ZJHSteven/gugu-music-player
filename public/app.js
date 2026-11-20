@@ -3,6 +3,7 @@ import { initOBR, createBus, apiGet, apiPost, uploadTrack, mediaDuration, lsGet,
 import { Engine } from "./engine.js";
 import { initCloudBridge } from "./cloud/bridge.js";
 import { makeDiagnosticReport } from "./cloud/diagnostics.js";
+import { anonymousRoomCode } from "./cloud/metadata-inspection.js";
 import { shouldRetryOwlbear, resetOwlbearRetries } from "./obr-identity.js";
 import { IosSyncAudio } from "./cloud/ios-sync-audio.js";
 
@@ -256,6 +257,8 @@ async function generateDiagnostics() {
     S.diagnosticsReport = makeDiagnosticReport({
       userAgent: navigator.userAgent,
       role: S.role,
+      // 仅以SHA-256截断比对GM与PLAYER是否属于同一个房间，不导出实际房间ID。
+      roomMatchCode: await anonymousRoomCode(cloud?.roomId),
       sdkReady: window.__bardIdentity?.ready,
       roomIdPresent: Boolean(window.__bardIdentity?.roomIdPresent),
       engineResponded: Boolean(background),
@@ -579,13 +582,20 @@ function playerView() {
   // Metadata，但可能完全没有咕咕的状态。不能误导玩家为「GM 尚未播放」，
   // 也不能展示实际上永远无法成功的「我是主持」按钮。
   // 咕咕云版必须由本房间 GM 启动，才会创建自己的歌单与播放时间轴。
-  if (window.BARD_CLOUD && !S.now) return `
+  if (window.BARD_CLOUD && !S.now) {
+    const roomMeta = window.__cloudBridge?.startupDiagnostics?.();
+    const capacityWarning = roomMeta?.pointerFits === false
+      ? `<div class="notice err">本房间其他扩展占用较多 Room Metadata：当前总量 ${roomMeta.totalBytes} 字节，即使改用DO快照，Owlbear也容纳不下最小指针。需要房主清理其他扩展的过量房间元数据。</div>`
+      : "";
+    return `
     <div class="empty">尚未取得本房间的咕咕音乐会话</div>
     <div class="player-note">可能是房主尚未使用本插件，也可能是当前设备的 Owlbear 房间元数据尚未同步。已安排有限次自动重读；如果房主明确正在播放，请打开诊断并复制报告，不要当成音频下载失败。</div>
+    ${capacityWarning}
     <div class="field">
       <div class="label">我的音量 <span class="hint">${vol}%</span></div>
       <div class="vol"><input type="range" min="0" max="100" value="${vol}" data-act="vol" /></div>
     </div>`;
+  }
   // 房间还没人控制：给主持一个入口（OBR 偶尔会把 GM 报成 PLAYER）
   const canClaim = !window.BARD_CLOUD && !S.now?.owner;
   return `
