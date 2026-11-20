@@ -5,4 +5,4 @@
  * manifest 已升级而诊断仍显示旧版，导致无法判断客户端是否更新。
  * 此文件仅属于独立 v3.2.x 热修复分支；v3.3 的预发布分支不在本轮修改。
  */
-export const CLOUD_RELEASE_VERSION = "3.2.7";
+export const CLOUD_RELEASE_VERSION = "3.2.8";

@@ -4,6 +4,7 @@ import { Engine } from "./engine.js";
 import { initCloudBridge } from "./cloud/bridge.js";
 import { makeDiagnosticReport } from "./cloud/diagnostics.js";
 import { IosSyncAudio } from "./cloud/ios-sync-audio.js";
+import { shouldRetryOwlbear, resetOwlbearRetries } from "./obr-identity.js";
 
 window.__appBuild = "build-folders-1";
 
