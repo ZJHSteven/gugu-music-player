@@ -214,6 +214,7 @@ export function createBus({ onMessage }) {
 }
 
 // ---------- OBR SDK ----------
+import { validateOwlbearIdentity } from "./obr-identity.js";
 let sdkPromise = null;
 
 /**
@@ -280,7 +281,8 @@ async function detectRole(OBR, tries = 8, gap = 500) {
     }
     await new Promise((r) => setTimeout(r, gap));
   }
-  return { role: "PLAYER", attempts };
+  // SDK 尚未返回角色不能擅自判成 PLAYER，否则后续空会话被伪装成没有歌。
+  return { role: null, attempts };
 }
 
 /** 返回 { OBR, ready, role, attempts, roomId, name }。?dev=1 用假 SDK。 */
@@ -289,11 +291,33 @@ export async function initOBR() {
     const dev = new URLSearchParams(location.search).get("dev");
     sdkPromise = dev ? import("./dev-sdk.js").then((m) => ({ dev: true, OBR: m.default })) : loadSdk().then((OBR) => ({ dev: false, OBR }));
   }
-  const { OBR, dev } = await sdkPromise;
+  let sdk;
+  try { sdk = await sdkPromise; }
+  catch (error) {
+    // 模块或握手出现一次性异常时，允许重新加载页面后重新尝试。
+    sdkPromise = null;
+    throw error;
+  }
+  const { OBR, dev } = sdk;
   const ready = await waitReady(OBR);
+  // Owlbear 官方明确要求 SDK ready 后才能使用房间、角色等接口。
+  // 不能等 12 秒后继续执行：梅林旧报告恰好是 PLAYER+空房间状态。
+  if (!ready) {
+    report("identity-unavailable", { code: "SDK_NOT_READY", dev });
+    validateOwlbearIdentity({ ready, role: null, roomId: "" });
+  }
   const { role, attempts } = await detectRole(OBR);
   const roomId = OBR.room?.id || "";
+  try {
+    validateOwlbearIdentity({ ready, role, roomId });
+  } catch (error) {
+    // 诊断仅记录固定错误代码与是否有房间 ID，不发送真实房间号。
+    report("identity-unavailable", {
+      code: error.code, dev, attempts: attempts.length, roomIdPresent: Boolean(roomId),
+    });
+    throw error;
+  }
   const name = await OBR.player.getName().catch(() => "");
-  report("identity", { dev, ready, role, roomId, attempts });
+  report("identity", { dev, ready, role, roomIdPresent: true, attempts });
   return { OBR, ready, role, attempts, roomId, name };
 }
