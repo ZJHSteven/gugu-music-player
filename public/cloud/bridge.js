@@ -38,6 +38,26 @@ export class CloudBridge {
     this.bestRoundTrip = Infinity;
     this.clockRequests = new Map();
     this.initialized = false;
+    // 房间元数据可能在 Owlbear iframe 首次握手后才可读。只记录统计，
+    // 不向诊断暴露完整 Metadata、房间号或音频摘要。
+    this.metadataReads = 0;
+    this.metadataReadFailures = 0;
+    this.metadataChangeEvents = 0;
+    this.lastReadHadMusic = false;
+    // 可由单元测试缩短延迟；生产仍限定为启动后最多三次补偿读取，
+    // 不设永久轮询，也不碰 DO 的费用或 WebSocket 连接。
+    this.startupRetryDelays = [2000, 5000, 12000];
+  }
+
+  startupDiagnostics() {
+    return {
+      roomIdPresent: Boolean(this.roomId),
+      metadataReads: this.metadataReads,
+      metadataReadFailures: this.metadataReadFailures,
+      metadataChangeEvents: this.metadataChangeEvents,
+      lastReadHadMusic: this.lastReadHadMusic,
+      sessionReady: Boolean(this.state),
+    };
   }
 
   async isGM() {
@@ -48,6 +68,7 @@ export class CloudBridge {
     if (this.initialized) return this;
     this.initialized = true;
     this.OBR.room.onMetadataChange((metadata) => {
+      this.metadataChangeEvents++;
       this.receiveState(normalizeState(metadata?.[METADATA_KEY]));
     });
     this.OBR.broadcast.onMessage(BROADCAST_CHANNEL, (event) => {
@@ -77,9 +98,26 @@ export class CloudBridge {
         }
       }
     });
-    await this.refresh();
+    // 初次 getMetadata 可能暂时失败/返回空对象；不应让整个启动失败，
+    // 更不能把“当前没有读到音乐会话”直接等同于“房间没有音乐”。
+    let initialReadSucceeded = true;
+    try { await this.refresh(); }
+    catch (error) {
+      initialReadSucceeded = false;
+      console.warn("[gugu-cloud] 初次读取 Owlbear 房间状态失败，稍后重试", error);
+    }
+    if (!this.state) {
+      for (const delay of this.startupRetryDelays) {
+        const timer = setTimeout(() => {
+          if (!this.state) this.refresh().catch((error) => {
+            console.warn("[gugu-cloud] 补偿读取房间音乐状态失败", error);
+          });
+        }, delay);
+        timer.unref?.();
+      }
+    }
     // 未创建音乐房间时，GM 初始化一次。其后非 GM 仅监听 OBR 元数据变化。
-    if (!this.state && await this.isGM()) {
+    if (!this.state && initialReadSucceeded && await this.isGM()) {
       const latest = normalizeState((await this.OBR.room.getMetadata())?.[METADATA_KEY]);
       if (latest) this.receiveState(latest);
       else await this.commit(createState(randomSecret()));
@@ -133,8 +171,16 @@ export class CloudBridge {
   }
 
   async refresh() {
-    const data = await this.OBR.room.getMetadata();
-    await this.receiveState(normalizeState(data?.[METADATA_KEY]));
+    this.metadataReads++;
+    try {
+      const data = await this.OBR.room.getMetadata();
+      const state = normalizeState(data?.[METADATA_KEY]);
+      this.lastReadHadMusic = Boolean(state);
+      await this.receiveState(state);
+    } catch (error) {
+      this.metadataReadFailures++;
+      throw error;
+    }
   }
 
   getState() {
