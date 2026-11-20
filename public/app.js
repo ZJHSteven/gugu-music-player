@@ -253,6 +253,11 @@ async function generateDiagnostics() {
     S.diagnosticsReport = makeDiagnosticReport({
       userAgent: navigator.userAgent,
       role: S.role,
+      // 只提供布尔值和统计计数，不包含真实 Owlbear 房间号。
+      sdkReady: window.__bardIdentity?.ready,
+      roomIdPresent: window.__bardIdentity?.roomIdPresent,
+      engineResponded: Boolean(background),
+      roomMetadata: cloud?.startupDiagnostics?.() || null,
       hasMusicSession: Boolean(cloud?.state),
       revision: cloud?.state?.rev ?? null,
       trackLoaded: Boolean(S.now?.track),
@@ -546,11 +551,14 @@ function settingsView() {
 function playerView() {
   const hasTrack = Boolean(S.now?.track);
   const vol = Math.round((S.status.volume ?? 0.85) * 100);
-  // 房间还没人控制：给主持一个入口（OBR 偶尔会把 GM 报成 PLAYER）
-  const canClaim = !S.now?.owner;
+  // 云版真正的房间控制角色由 Owlbear SDK 提供。玩家没有取得控制权的权限，
+  // 尤其在刚加入房间没有读到 Metadata 时不能错误显示「房间还没人控制」。
+  const canClaim = !window.BARD_CLOUD && !S.now?.owner;
+  const waitingRoomState = window.BARD_CLOUD && !window.__cloudBridge?.state;
   return `
   ${nowCard(false)}
   ${iosSyncButtonHtml()}
+  ${waitingRoomState ? `<div class="notice warn">尚未取得 Owlbear 房间音乐会话，已安排有限次补偿读取。此时不是音频下载失败。若房主正在播放但仍未出现歌曲，请打开诊断并复制报告。</div>` : ""}
   ${S.status.blocked && !iosAudio ? `<button class="unlock" data-act="unlock">${icon("volume")}开启声音</button>` : ""}
   ${
     canClaim
@@ -1034,6 +1042,9 @@ async function boot() {
   window.__bardBooted = true;
   loadUpdateState().then(() => render(true)).catch(() => {});
   const { OBR, role, roomId, attempts, ready } = await initOBR();
+  // 与完整 roomId 分开保存：诊断仅允许导出是否获得房间身份。
+  window.__bardIdentity = { ready, roomIdPresent: Boolean(roomId) };
+  try { resetOwlbearRetries(sessionStorage); } catch {}
   S.role = role;
   S.roomId = roomId;
   initIosFollower();
@@ -1106,10 +1117,24 @@ function onBus(msg) {
 
 boot().catch((err) => {
   console.error(err);
+  const identityFailure = ["SDK_NOT_READY", "ROLE_UNAVAILABLE", "ROOM_UNAVAILABLE"]
+    .includes(err?.code);
+  // Owlbear SDK 刚加载失败时仅允许有限自动刷新，禁止无限循环重载。
+  let retry = false;
+  let delay = 0;
+  if (identityFailure) {
+    try {
+      ({ retry, delay } = shouldRetryOwlbear(sessionStorage));
+    } catch { retry = false; }
+  }
   const view = document.getElementById("view");
   if (view) {
-    view.innerHTML = `<div class="notice err">${icon("alert")}<span>扩展初始化失败：${esc(
-      err.message || err
-    )}</span></div><button class="btn primary block" onclick="location.reload()">重新加载</button>`;
+    view.innerHTML = `<div class="notice err">${icon("alert")}<span>
+      ${identityFailure ? "正在重新连接 Owlbear 房间，而不是等待歌曲下载：" : "扩展初始化失败："}
+      ${esc(err.message || err)}
+    </span></div><button class="btn primary block" onclick="location.reload()">重新连接房间</button>
+    <div class="foot">错误代码：${esc(err?.code || "STARTUP_ERROR")}
+    ${retry ? "；将有限次自动重试" : "；不会无限自动刷新"}</div>`;
   }
+  if (retry) setTimeout(() => location.reload(), delay);
 });
