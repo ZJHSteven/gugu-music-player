@@ -1,5 +1,13 @@
 # 云端版当前状态（2026-11-20）
 
+## v3.2.8 梅林无痕玩家不载入房间会话专项（已上线）
+
+- 2026-11-20 13:49北京时间：Cloudflare Worker `gugu-music-cloud` 正式部署 `v3.2.8`，Version ID `86c242d5-e624-4d20-a8a7-3516552d0b98`，经 Cloudflare API 查询最新部署占100%流量。构建/插件校验完成。
+- 起因：梅林在2026-11-20 10:39的生产 v3.2.7 GM + 无痕PLAYER报告，GM有 rev8、270.84秒、audio readyState4/currentTime21.31，PLAYER hasMusicSession=false、revision=null、relay/DO=null。确定PLAYER尚未获取音乐会话，而非音频格式或下载后校验失败；尚不能证明唯一根因为SDK握手。
+- 修复严格的 `OBR.isReady`、角色以及非空 roomId 检查；启动失败有限两次重新握手；初次 `getMetadata` 读取为空时启动期补读2/5/12秒；诊断新增 sdk ready、roomIdPresent、后台应答和元数据读取/失败/事件计数。播放器误示「没人控制，可以领取」的云版条件已禁用。
+- 未改动已经上线的v3.2.7音频存储、iOS授权、手机滚动与二进制协议，也没有把开发v3.3时间轴/备份/快照整包混入生产。独立工作树 `D:\Workspace\gugu-music-player-hotfix-v328`、分支`hotfix/merlin-sdk-v328`。
+- 全量回归：云版34/34、Node42/42、EdgeUI61/61，静态构建及插件验证通过；梅林本人真机/Edge无痕复测仍待完成。v3.3开发分支将单独整合v3.2.7/v3.2.8的可复用修复，避免日后发布回退。
+
 ## v3.2.7 iPhone Chrome 无痕模式、下载故障与滚动热修复
 
 - **2026-11-20 02:22（北京时间）正式已上线 v3.2.7**：由隔离工作树的 Wrangler 将 6 个新增/修改的 Static Assets 上传并部署到 `gugu-music-cloud` 与 `music.zjhstudio.com`，Worker Version ID `68c4c493-0efe-44f6-9e8f-f17f42606603`。随后 Cloudflare API 独立确认此版本占部署流量100%。本地原开发分支不受影响。公开站点的 HTTP manifest 本轮网络访问超时，不能虚报已通过在线 GET 回归；真实 iPhone、用户房间音频复测仍待进行。
