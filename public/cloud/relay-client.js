@@ -13,9 +13,6 @@ import { prioritizeTracks } from "./request-priority.js";
 import { sendAudioWithoutAck, sendAudioWithAck } from "./audio-sender.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-// 每八个 256 KiB 分块才要求一次确认：窗口约 2 MiB。
-// 背压比逐块确认省掉 7/8 的小控制包，并避免慢玩家缓存过多待处理帧。
-const ACK_WINDOW = 8;
 const MAX_SIMULTANEOUS_DOWNLOADS = 2;
 
 export class RelayClient {
@@ -383,11 +380,9 @@ export class RelayClient {
     if (!t || t.size > MAX_AUDIO_SIZE || !Number.isSafeInteger(t.size)) return;
     if (header.total !== Math.ceil(t.size / CHUNK_SIZE)) return;
     if (this.owned.has(header.hash)) {
-      // 旧请求可能已经在 DO 转发队列里，仍要对分组尾块 ACK，
-      // 否则发送者会无谓地等待 30 秒才能停止旧传输。
-      if ((header.index + 1) % ACK_WINDOW === 0 || header.index + 1 === header.total) {
-        this.send({ t: "ack", hash: header.hash, to: header.from, index: header.index });
-      }
+      // 文件可能刚被兄弟 iframe 缓存。仍对每块重发 ACK，避免
+      // 新版发送者因第一块已存在便永远收不到确认。
+      this.send({ t: "ack", hash: header.hash, to: header.from, index: header.index });
       return;
     }
     let rec = this.incoming.get(header.hash);
