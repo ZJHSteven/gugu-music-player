@@ -17,6 +17,8 @@ const nextTick = () => new Promise((resolve) => setTimeout(resolve, 20));
 
 test("ArrayBuffer已抵达浏览器，但块长度不匹配：原始计数不能被状态机静默吞掉", async () => {
   const original = globalThis.WebSocket;
+  const oldLocation = globalThis.location;
+  globalThis.location = { protocol: "https:", host: "example.test" };
   class WS { static OPEN = 1; readyState = 1; send() {} close() {} }
   globalThis.WebSocket = WS;
   const client = new RelayClient("test", "test");
@@ -42,11 +44,15 @@ test("ArrayBuffer已抵达浏览器，但块长度不匹配：原始计数不能
     client.close();
     if (original === undefined) delete globalThis.WebSocket;
     else globalThis.WebSocket = original;
+    if (oldLocation === undefined) delete globalThis.location;
+    else globalThis.location = oldLocation;
   }
 });
 
 test("浏览器将二进制事件交付为Blob时仍然能够解析；坏帧也明确计入拒绝", async () => {
   const original = globalThis.WebSocket;
+  const oldLocation = globalThis.location;
+  globalThis.location = { protocol: "https:", host: "example.test" };
   class WS { static OPEN = 1; readyState = 1; send() {} close() {} }
   globalThis.WebSocket = WS;
   const client = new RelayClient("test", "test");
@@ -67,5 +73,7 @@ test("浏览器将二进制事件交付为Blob时仍然能够解析；坏帧也�
     client.close();
     if (original === undefined) delete globalThis.WebSocket;
     else globalThis.WebSocket = original;
+    if (oldLocation === undefined) delete globalThis.location;
+    else globalThis.location = oldLocation;
   }
 });
