@@ -17,6 +17,8 @@ import { sendAudioWithoutAck, sendAudioWithAck } from "./audio-sender.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const MAX_SIMULTANEOUS_DOWNLOADS = 2;
+// 用户主动诊断时使用的保留哈希，不对应任何真实音频。
+const PROBE_HASH = "0".repeat(64);
 
 export class RelayClient {
   constructor(roomId, secret, onFile = () => {}, onError = () => {}) {
@@ -53,6 +55,8 @@ export class RelayClient {
     this.priorityTrackId = null;
     this.unavailable = new Set();
     this.updateGeneration = 0;
+    this.probePending = null;
+    this.lastProbe = null;
     // 同一个 Owlbear 房间会在同源的弹窗和后台 iframe 中各开一条 DO 连接。
     // 两者共享 OPFS/IndexedDB 文件，但不共享 JavaScript 内存状态。
     // 只广播已存入本地的音频 SHA-256，避免另一个 iframe 再次请求公网音频。
@@ -102,8 +106,41 @@ export class RelayClient {
         };
       }),
       ...this.metrics,
+      lastProbe: this.lastProbe,
       events: this.events.slice(-25),
     };
+  }
+
+  /**
+   * 单次人工触发的链路诊断：DO依次回小型文本和256KiB二进制数据。
+   * 这能检查readyState为OPEN的连接是否真的还能收消息；不会周期轮询。
+   * 只有两种消息都到达才能判断二进制下行链路确实活跃。
+   */
+  probeTransfer(timeoutMs = 4500) {
+    if (this.probePending) return this.probePending.promise;
+    if (this.stopped || this.ws?.readyState !== WebSocket.OPEN || !this.peer) {
+      this.lastProbe = { textAck: false, binaryAck: false, elapsedMs: null };
+      return Promise.resolve(this.lastProbe);
+    }
+    const nonce = [...crypto.getRandomValues(new Uint8Array(6))]
+      .map((n) => n.toString(16).padStart(2, "0")).join("");
+    const pending = { nonce, textAck: false, binaryAck: false,
+      startedAt: Date.now(), resolve: null, timer: null, promise: null };
+    pending.promise = new Promise((resolve) => { pending.resolve = resolve; });
+    this.probePending = pending;
+    pending.timer = setTimeout(() => this.finishProbe(), timeoutMs);
+    this.send({ t: "probe", nonce });
+    return pending.promise;
+  }
+
+  finishProbe() {
+    const p = this.probePending;
+    if (!p) return;
+    clearTimeout(p.timer);
+    this.probePending = null;
+    this.lastProbe = { textAck: p.textAck, binaryAck: p.binaryAck,
+      elapsedMs: Date.now() - p.startedAt };
+    p.resolve(this.lastProbe);
   }
 
   url() {
@@ -268,6 +305,7 @@ export class RelayClient {
     };
     ws.onclose = (event) => {
       if (this.ws !== ws) return;
+      this.finishProbe();
       this.metrics.reconnects++;
       this.note("disconnected", { code: event?.code || 0 });
       this.ws = null;
@@ -328,6 +366,12 @@ export class RelayClient {
       case "welcome":
         this.peer = msg.peer;
         this.note("identified", { peer: this.peer?.slice(0, 12) });
+        break;
+      case "probe-ack":
+        if (this.probePending?.nonce === msg.nonce) {
+          this.probePending.textAck = true;
+          if (this.probePending.binaryAck) this.finishProbe();
+        }
         break;
       case "ack": {
         const key = `${msg.hash}:${msg.from}`;
@@ -412,6 +456,18 @@ export class RelayClient {
       throw error;
     }
     const { header, bytes } = decoded;
+    if (header.hash === PROBE_HASH) {
+      // 独立于音频歌单的探针，不能把它当成未登记曲目拒绝。
+      const p = this.probePending;
+      if (p?.nonce === header.probe && header.to === this.peer &&
+          header.from === this.peer && header.total === 1 && header.index === 0 &&
+          bytes.length === CHUNK_SIZE && bytes[0] === 0x5a &&
+          bytes[Math.floor(CHUNK_SIZE / 2)] === 0x5a && bytes[CHUNK_SIZE - 1] === 0x5a) {
+        p.binaryAck = true;
+        if (p.textAck) this.finishProbe();
+      }
+      return;
+    }
     this.metrics.parsedFrames++;
     const t = this.tracks.find((t) => t.hash === header.hash);
     if (!t) return this.rejectFrame("untracked-hash");
@@ -494,6 +550,7 @@ export class RelayClient {
 
   close() {
     this.stopped = true;
+    this.finishProbe();
     this.updateGeneration++;
     this.localBus?.close();
     this.cancelAcks();

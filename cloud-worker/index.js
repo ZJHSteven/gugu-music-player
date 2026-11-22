@@ -12,7 +12,7 @@
  * 但它不是 Owlbear 官方签名认证，无法防范有意泄露密钥的房间内成员。
  */
 import { DurableObject } from "cloudflare:workers";
-import { decodeChunk, HASH_RE, PEER_RE } from "../public/cloud/wire.js";
+import { decodeChunk, encodeChunk, CHUNK_SIZE, HASH_RE, PEER_RE } from "../public/cloud/wire.js";
 
 const roomPattern = /^[a-zA-Z0-9_-]{1,100}$/;
 const keyPattern = /^[a-f0-9]{32}$/;
@@ -161,6 +161,19 @@ export class RoomRelay extends DurableObject {
     if (!data || typeof data !== "object") return;
 
     switch (data.t) {
+      case "probe": {
+        // 仅人工诊断时向当前连接回一小段文本和一个与音频块同大小的
+        // 二进制帧；每条连接10秒最多一次，不保存音频或身份信息。
+        if (!/^[a-f0-9]{12}$/.test(data.nonce || "")) return;
+        const now = Date.now();
+        if (now - (me.lastProbeAt || 0) < 10000) return;
+        sender.serializeAttachment({ ...me, lastProbeAt: now });
+        sender.send(JSON.stringify({ t: "probe-ack", nonce: data.nonce }));
+        const payload = new Uint8Array(CHUNK_SIZE).fill(0x5a);
+        sender.send(encodeChunk({ from: me.peer, to: me.peer,
+          hash: "0".repeat(64), index: 0, total: 1, probe: data.nonce }, payload));
+        break;
+      }
       case "have": {
         const hashes = validHashes(data.hashes);
         sender.serializeAttachment({ ...me, hashes, lastSeenAt: Date.now() });

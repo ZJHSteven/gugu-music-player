@@ -229,6 +229,8 @@ async function generateDiagnostics() {
       bus?.post({ t: "diagnostics-request" });
     });
     const cloud = window.__cloudBridge;
+    // 主动检测面板的WS是否还能收文本和256KiB二进制帧，而非仅信任OPEN。
+    const connectionProbe = await cloud?.relay?.probeTransfer?.(4500) || null;
     let server = null;
     let diagnosticsError = false;
     if (cloud?.state?.secret) {
@@ -271,6 +273,7 @@ async function generateDiagnostics() {
       iosSynchronizedPlayback: iosFollower?.status() || null,
       engine: background,
       panelRelay,
+      connectionProbe,
       server,
       diagnosticsError,
     });

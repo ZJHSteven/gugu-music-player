@@ -231,6 +231,12 @@ export function makeDiagnosticReport(source) {
     } : null,
     relayInAudioEngine: relayStatus(engine.relay),
     relayInPanel: relayStatus(p.panelRelay),
+    // 只有用户主动生成报告才进行网络探针；不曝光随机nonce。
+    connectionProbe: p.connectionProbe ? {
+      textAck: p.connectionProbe.textAck === true,
+      binaryAck: p.connectionProbe.binaryAck === true,
+      elapsedMs: finite(p.connectionProbe.elapsedMs),
+    } : null,
     relayAtCloudflare: serverStatus(p.server),
     diagnosticsError: p.diagnosticsError ? "DO 状态读取失败或超时" : null,
   };
