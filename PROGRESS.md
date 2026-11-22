@@ -1,5 +1,13 @@
 # 云端版最新状态（2026-11-23 北京时间）
 
+## 2026-11-23：v3.3.3 二次源码审计、主动探针与房间供源已落实
+
+- **故障再定位**：梅林v3.3.1日志Cloudflare连接分别`needCount=10/17`，对应`forwardedBytes=21,897,470 / 37,225,699`。两者分别精确除以10/17，均为**2,189,747B/次**，等于2,188,046B音频+9帧协议头1,701B。故DO每次请求都已将9帧提交给发送接口，但不能推断浏览器实际收到；Cloudflare官方WS文档明确send()可能在失效连接上不报错而丢消息。梅林的Edge面板WebSocket `reconnects=0`，不说明端到端通路健康。旧接收端30秒超时仅重发need、继续使用readyState=OPEN的同一WS，缺少主动liveness检测，是可证实的恢复策略缺陷；尚未定位梅林本人的唯一根因。
+- **真实浏览器补测**：使用日常Chrome隔离测试标签与正式公网DO，实际加载`RelayClient`模块，接收一个程序生成的2,188,046B音频文件，9/9帧、SHA256、OPFS保存均成功（非模拟接收器）；旧测试标签一度重加载导致源端对失效旧peer等待ACK超时，新peer成功收齐，进一步说明不能把曾经OPEN当作持续健康。测试随机房间/音频文件已清理，测试标签已关闭。
+- **v3.3.3部署**：Cloudflare Worker `gugu-music-cloud` Version `c228ba2e-a947-40ef-a1b8-9baafb79f817`，Wrangler正式deployment确认100%流量。新增浏览器onmessage入口`rawBinaryMessages/rawBinaryBytes/rawBinaryKind`，协议解析`parsedFrames`，状态机拒收`rejectedFrames/lastRejectReason/duplicateFrames`，超时清空前的`timedOutPartialBytes/Chunks`；Blob有效二进制帧兼容处理。用户主动点击生成诊断时，DO限流(每peer10秒)回显文本ACK及一个256KiB二进制帧，报告`connectionProbe.textAck/binaryAck/elapsedMs`，不泄漏房间ID、密钥或原始音频。不自动周期探测，不凭OPEN断言可用。
+- **验收**：Cloud67/67、Node42/42、EdgeUI61/61通过；本地DO手动回显通过；正式公网随机房间文本+256KiB二进制回显通过、两名独立PLAYER并发各2,188,046B+故意丢ACK仍完整SHA256通过；线上6/6 HTTP200+CORS。已在用户日常Chrome重新打开Owlbear `The Cured Tying` GM房间，音乐状态rev6501/playing=true、本地有一首2,188,046B音频(摘要6182290c3c)、WebSocket OPEN、已加载v3.3.3模块；在真实GM房间点对点探针结果textAck=true、binaryAck=true、耗时1577ms。电脑当时接交流电，当前Windows计划交流电空闲睡眠=从不，仍不可保证掉电/断网/用户关闭浏览器后可供源。
+- **必须后续梅林本人复测**：让他完整刷新到v3.3.3后生成新诊断；若textAck/binaryAck都false→考虑半开连接/路径失败，若仅binaryAck=false→优先查Cloudflare二进制下行/Edge，若两者true但音频receivedFrames不足且rejectedFrames>0→状态机Bug，若receivedFrames9/verified1而未出声→转至音频/权限层。不要据本机公网E2E通过声称梅林已修复。v3.3.2 `0384c3b8-8837-4f49-9737-5ac579103c83`为上一个可回滚版本。
+
 ## 2026-11-23：梅林 v3.3.1 音频收包停滞，v3.3.2 已正式发布
 
 - **梅林真实诊断证据**：Windows Edge/PLAYER，Owlbear SDK ready、roomId、房间音乐状态v1 rev6501及playingInRoom全部正常，room metadata 4243B、pointerFits=true；后台/面板两个独立 Relay Peer 在线，分别发起10/17次请求、超时9/16次。GM提供端在DO累计发送/转发59,123,169B（多轮重复），但面板累计接收524,288B、后台0B，当前未完成分块、SHA256 verified=0，播放器 `readyState=0`、`sourceType=null`。**此轮故障发生在音频二进制传输/浏览器收包阶段，不是当前会话缺失、16KiB容量或音频解码失败**。Cloudflare的转发计数不能等同于接收端实际收包。

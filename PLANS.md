@@ -1,5 +1,11 @@
 # 咕咕点歌台 · Cloudflare 云版执行计划
 
+## 2026-11-23：v3.3.3二次审计与待证伪假设
+
+- 已上线更精细的三层收包统计及手动文本/256KiB二进制探针；结合梅林27次请求恰好27个完整文件被DO排队的数据，停止仅靠`forwardedBytes`判断真实送达，也停止把`readyState=OPEN`当作连接稳定证据。
+- 梅林与GM新报告须同房间匹配、同为v3.3.3：优先判断`connectionProbe.textAck`、`binaryAck`，其次看`rawBinaryMessages`、`parsedFrames`、`rejectedFrames`、`lastRejectReason`、`receivedFrames`、`filesVerified`。GM端核对是否有实际发件日志/重传事件。只有这些证据明确后才针对性更改链路，而非继续盲加ACK。
+- 可选后续恢复策略：若检测到应用层探针失败，主动关闭/重建该WS并恢复缺失文件请求；不能对所有慢链路一律强制重连。实现前需模拟已丢连接与大延迟场景，避免在正常网络触发重试风暴。
+
 ## 2026-11-22：梅林 v3.3.1 真实 Edge 收包停滞（P0）
 
 - 新证据：同一房间 SDK/会话/元数据均正常（rev6501），两个接收实例共重复 need 27 次，固定约30秒超时；Cloudflare累计转发约59.1MB，但浏览器后台本地0B、弹窗累计仅524288B，SHA256 verified 0。累计转发≠浏览器实收；尚不能确定是网络丢帧、转发队列积压、客户端执行挂起还是中继流控缺失。
