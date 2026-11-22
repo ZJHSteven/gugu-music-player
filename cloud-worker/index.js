@@ -181,7 +181,10 @@ export class RoomRelay extends DurableObject {
           (p) => p.info.peer !== me.peer && p.info.hashes?.includes(data.hash)
         );
         if (source) {
-          source.ws.send(JSON.stringify({ t: "serve", hash: data.hash, to: me.peer }));
+          // 仅由接收端主动选择逐块流控。旧版need没有此字段，保持原来的
+          // 无ACK传输方式，因此新旧页面混用时不会互相锁死。
+          source.ws.send(JSON.stringify({ t: "serve", hash: data.hash, to: me.peer,
+            flowControl: data.flowControl === "ack-v1" ? "ack-v1" : null }));
         } else {
           sender.send(JSON.stringify({ t: "unavailable", hash: data.hash }));
         }

@@ -45,3 +45,55 @@ export async function sendAudioWithoutAck({ ws, file, hash, from, to }) {
   }
   return true;
 }
+
+/**
+ * 新版接收端主动声明 ack-v1 后才使用的逐块确认发送。
+ *
+ * 背景：过去发送方只约束「自己→Cloudflare」的 bufferedAmount，无法知道
+ * Cloudflare→远端 Edge 的浏览器是否真正收到二进制块。DO 因而可能不断排队
+ * 转发完整文件，而慢客户端仅收到最初几块。逐块确认是端到端背压：在对端
+ * 明确接收上一个 256KiB 块之前，绝不向 DO 排入下一块。
+ *
+ * ACK 可以比等待注册更早到达：负责管理 ACK 高水位的调用方必须缓存它。
+ * ACK 丢失时重发同一序号、同一内容；接收端也必须给重复块再次 ACK。
+ * 这里的 ACK 只证明块已进接收端 JS 内存，最终 SHA-256 和持久存储仍在
+ * 接收端完成，不能等同于 verified 或实际播放声音。
+ */
+export async function sendAudioWithAck({ ws, file, hash, from, to, waitForAck,
+  onRetry = () => {}, ackTimeoutMs = 5000, maxAttempts = 4 }) {
+  if (!(file instanceof Blob) || !file.size || file.size > MAX_AUDIO_SIZE) {
+    throw new Error("音频文件缺失或超过允许大小");
+  }
+  if (typeof waitForAck !== "function" || !Number.isFinite(ackTimeoutMs) ||
+      ackTimeoutMs <= 0 || !Number.isInteger(maxAttempts) || maxAttempts < 1) {
+    throw new Error("端到端音频流控参数无效");
+  }
+  const total = Math.ceil(file.size / CHUNK_SIZE);
+  for (let index = 0; index < total; index++) {
+    const bytes = new Uint8Array(await file.slice(
+      index * CHUNK_SIZE, (index + 1) * CHUNK_SIZE
+    ).arrayBuffer());
+    // 重试同一块时共用完全相同的帧内容，避免因异步读文件产生数据差异。
+    const frame = encodeChunk({ from, to, hash, index, total }, bytes);
+    let acknowledged = false;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (!ws || ws.readyState !== 1) return false;
+      // 每轮仅在上一块确认为止才发送下一块，天然约束DO下游队列长度。
+      ws.send(frame);
+      try {
+        await waitForAck(index, ackTimeoutMs);
+        acknowledged = true;
+        break;
+      } catch (error) {
+        if (ws.readyState !== 1) return false;
+        if (attempt === maxAttempts) {
+          throw new Error(`音频分块 ${index + 1}/${total} 等待确认超时（已重试）`,
+            { cause: error });
+        }
+        onRetry(index, attempt);
+      }
+    }
+    if (!acknowledged) return false;
+  }
+  return true;
+}

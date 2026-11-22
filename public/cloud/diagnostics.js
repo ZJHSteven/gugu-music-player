@@ -23,7 +23,7 @@ function eventSummary(value) {
   if (!Array.isArray(value)) return [];
   const types = new Set([
     "connected", "disconnected", "socket-error", "identified", "failure",
-    "request", "timeout", "error", "unavailable", "sent-queued", "verified",
+    "request", "timeout", "error", "unavailable", "sent-queued", "verified", "resend",
     "media-error", "playing", "pause", "waiting", "seeking", "play-rejected",
     "native-loop", "plan-transition", "next-preload", "clock-recovery",
   ]);
@@ -33,6 +33,7 @@ function eventSummary(value) {
     hash: short(e.hash, 10),
     errorName: short(e.name, 40),
     bytes: finite(e.bytes),
+    index: finite(e.index),
     code: finite(e.code),
     position: finite(e.position),
     phase: ["wire", "integrity", "storage", "notification"].includes(e.phase)
@@ -58,6 +59,9 @@ function relayStatus(r) {
     filesVerified: finite(r.verified),
     reconnects: finite(r.reconnects),
     timeouts: finite(r.timeouts),
+    receivedFrames: finite(r.receivedFrames),
+    resentFrames: finite(r.resentFrames),
+    lastChunkIndex: finite(r.lastChunkIndex),
     unavailable: finite(r.unavailable),
     files: (r.files || []).slice(0, 12).map((f) => ({
       hash: short(f.hash, 10),

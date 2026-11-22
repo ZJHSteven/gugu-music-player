@@ -10,7 +10,7 @@
 import { CHUNK_SIZE, MAX_AUDIO_SIZE, HASH_RE, decodeChunk, encodeChunk } from "./wire.js";
 import { getAudio, putAudio, digest } from "./storage.js";
 import { prioritizeTracks } from "./request-priority.js";
-import { sendAudioWithoutAck } from "./audio-sender.js";
+import { sendAudioWithoutAck, sendAudioWithAck } from "./audio-sender.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 每八个 256 KiB 分块才要求一次确认：窗口约 2 MiB。
@@ -27,7 +27,8 @@ export class RelayClient {
     // 导出的报告只包含固定类型、数量、时间与歌曲摘要前 10 位。
     this.events = [];
     this.metrics = { requested: 0, receivedBytes: 0, verified: 0,
-      sendQueuedBytes: 0, reconnects: 0, unavailable: 0, timeouts: 0 };
+      sendQueuedBytes: 0, reconnects: 0, unavailable: 0, timeouts: 0,
+      receivedFrames: 0, resentFrames: 0, lastChunkIndex: -1 };
     this.onError = (error) => {
       this.note("error", { name: String(error?.name || "Error").slice(0, 35) });
       onError(error);
@@ -156,7 +157,8 @@ export class RelayClient {
     this.requested.add(hash);
     this.metrics.requested++;
     this.note("request", { hash: hash.slice(0, 10) });
-    this.send({ t: "need", hash });
+    // 协商仅影响本次文件发送，旧版 GM 看不懂此字段仍沿用原发送流程。
+    this.send({ t: "need", hash, flowControl: "ack-v1" });
     this.watchTransfer(hash);
   }
 
@@ -193,14 +195,14 @@ export class RelayClient {
    * 等待对应接收方确认某批末尾块。确认可能在等待函数注册前到达，
    * 所以先在 lastAck 中留下高水位，再查是否需要挂起 Promise。
    */
-  waitForAck(hash, receiver, index) {
+  waitForAck(hash, receiver, index, timeoutMs = 30000) {
     const key = `${hash}:${receiver}`;
     if ((this.lastAck.get(key) ?? -1) >= index) return Promise.resolve();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.ackWaiters.delete(key);
         reject(new Error("接收者没有确认音频窗口，停止本次传输"));
-      }, 30000);
+      }, timeoutMs);
       this.ackWaiters.set(key, { index, resolve, reject, timer });
     });
   }
@@ -317,7 +319,7 @@ export class RelayClient {
         this.pumpRequests();
         break;
       case "serve":
-        this.serve(msg.hash, msg.to).catch(this.onError);
+        this.serve(msg.hash, msg.to, msg.flowControl).catch(this.onError);
         break;
       case "unavailable":
         this.metrics.unavailable++;
@@ -334,7 +336,7 @@ export class RelayClient {
     }
   }
 
-  async serve(hash, to) {
+  async serve(hash, to, flowControl = null) {
     if (!HASH_RE.test(hash) || !this.owned.has(hash) || !this.peer) return;
     const serveKey = `${hash}:${to}`;
     if (this.serving.has(serveKey)) return;
@@ -343,9 +345,18 @@ export class RelayClient {
     try {
     const file = await getAudio(hash);
     if (!file || file.size > MAX_AUDIO_SIZE) return;
-    const sent = await sendAudioWithoutAck({
-      ws: this.ws, file, hash, from: this.peer, to,
-    });
+    const options = { ws: this.ws, file, hash, from: this.peer, to };
+    // 兼容升级中的其他成员：只有新玩家明确声明支持逐块确认，才启用它；
+    // 老玩家仍用v3.3.1无需ACK的发送方式，不会因新版GM而卡住。
+    const sent = flowControl === "ack-v1"
+      ? await sendAudioWithAck({ ...options,
+        waitForAck: (index, ms) => this.waitForAck(hash, to, index, ms),
+        onRetry: (index) => {
+          this.metrics.resentFrames++;
+          this.note("resend", { hash: hash.slice(0, 10), index });
+        },
+      })
+      : await sendAudioWithoutAck(options);
     if (sent) {
       this.metrics.sendQueuedBytes += file.size;
       this.note("sent-queued", { hash: hash.slice(0, 10),
@@ -384,16 +395,22 @@ export class RelayClient {
       rec = { chunks: new Array(header.total), size: 0, complete: false };
       this.incoming.set(header.hash, rec);
     }
-    if (rec.complete || rec.chunks[header.index]) return;
+    if (rec.complete || rec.chunks[header.index]) {
+      // ACK 在网络中丢失时，发送者会重发同一块。必须重发确认，
+      // 否则发送者永远不敢继续发送下一块，重现旧版「8块处卡死」。
+      this.send({ t: "ack", hash: header.hash, to: header.from, index: header.index });
+      return;
+    }
     const expected = Math.min(CHUNK_SIZE, t.size - header.index * CHUNK_SIZE);
     if (bytes.byteLength !== expected) return;
     rec.chunks[header.index] = bytes.slice();
     rec.size += bytes.byteLength;
     this.metrics.receivedBytes += bytes.byteLength;
+    this.metrics.receivedFrames++;
+    this.metrics.lastChunkIndex = header.index;
     this.watchTransfer(header.hash);
-    if ((header.index + 1) % ACK_WINDOW === 0 || header.index + 1 === header.total) {
-      this.send({ t: "ack", hash: header.hash, to: header.from, index: header.index });
-    }
+    // 新发送者每个块均等待ACK；旧发送者忽略新增的确认，保证互操作。
+    this.send({ t: "ack", hash: header.hash, to: header.from, index: header.index });
     if (rec.size !== t.size || rec.chunks.some((part) => !part)) return;
     rec.complete = true;
     const blob = new Blob(rec.chunks, { type: t.mime || "audio/mpeg" });
