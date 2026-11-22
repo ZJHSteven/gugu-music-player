@@ -76,6 +76,7 @@ function relayStatus(r) {
     controlMessages: finite(r.controlMessages),
     timedOutPartialBytes: finite(r.timedOutPartialBytes),
     timedOutPartialChunks: finite(r.timedOutPartialChunks),
+    probeBinaryMessages: finite(r.probeBinaryMessages),
     unavailable: finite(r.unavailable),
     files: (r.files || []).slice(0, 12).map((f) => ({
       hash: short(f.hash, 10),

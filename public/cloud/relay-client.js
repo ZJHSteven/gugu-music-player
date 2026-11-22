@@ -35,7 +35,8 @@ export class RelayClient {
       rawBinaryMessages: 0, rawBinaryBytes: 0, rawBinaryKind: null,
       parsedFrames: 0, rejectedFrames: 0, lastRejectReason: null,
       duplicateFrames: 0, controlMessages: 0,
-      timedOutPartialBytes: 0, timedOutPartialChunks: 0 };
+      timedOutPartialBytes: 0, timedOutPartialChunks: 0,
+      probeBinaryMessages: 0 };
     this.onError = (error) => {
       this.note("error", { name: String(error?.name || "Error").slice(0, 35) });
       onError(error);
@@ -57,6 +58,7 @@ export class RelayClient {
     this.updateGeneration = 0;
     this.probePending = null;
     this.lastProbe = null;
+    this.lastProbeAt = 0;
     // 同一个 Owlbear 房间会在同源的弹窗和后台 iframe 中各开一条 DO 连接。
     // 两者共享 OPFS/IndexedDB 文件，但不共享 JavaScript 内存状态。
     // 只广播已存入本地的音频 SHA-256，避免另一个 iframe 再次请求公网音频。
@@ -122,6 +124,11 @@ export class RelayClient {
       this.lastProbe = { textAck: false, binaryAck: false, elapsedMs: null };
       return Promise.resolve(this.lastProbe);
     }
+    // DO对每个连接的主动探针限流10秒；短时间重复点击复用最近结果，
+    // 不应因为第二次请求被限流而把一条健康连接误诊为黑洞。
+    if (this.lastProbe && Date.now() - this.lastProbeAt < 10000) {
+      return Promise.resolve(this.lastProbe);
+    }
     const nonce = [...crypto.getRandomValues(new Uint8Array(6))]
       .map((n) => n.toString(16).padStart(2, "0")).join("");
     const pending = { nonce, textAck: false, binaryAck: false,
@@ -140,6 +147,7 @@ export class RelayClient {
     this.probePending = null;
     this.lastProbe = { textAck: p.textAck, binaryAck: p.binaryAck,
       elapsedMs: Date.now() - p.startedAt };
+    this.lastProbeAt = Date.now();
     p.resolve(this.lastProbe);
   }
 
@@ -306,6 +314,8 @@ export class RelayClient {
     ws.onclose = (event) => {
       if (this.ws !== ws) return;
       this.finishProbe();
+      this.lastProbeAt = 0;
+      this.lastProbe = null;
       this.metrics.reconnects++;
       this.note("disconnected", { code: event?.code || 0 });
       this.ws = null;
@@ -457,6 +467,7 @@ export class RelayClient {
     }
     const { header, bytes } = decoded;
     if (header.hash === PROBE_HASH) {
+      this.metrics.probeBinaryMessages++;
       // 独立于音频歌单的探针，不能把它当成未登记曲目拒绝。
       const p = this.probePending;
       if (p?.nonce === header.probe && header.to === this.peer &&
