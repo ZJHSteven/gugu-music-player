@@ -36,7 +36,8 @@ test("ArrayBuffer已抵达浏览器，但块长度不匹配：原始计数不能
     assert.equal(d.lastRejectReason, "chunk-size-mismatch");
     assert.equal(d.receivedBytes, 0);
     assert.equal(d.controlMessages, 0);
-    const json = JSON.parse(makeDiagnosticReport({ panelRelay: d }).split("\n").slice(2).join("\n"));
+    const report = makeDiagnosticReport({ panelRelay: d });
+    const json = JSON.parse(report.slice(report.indexOf("{")));
     assert.equal(json.relayInPanel.rawBinaryMessages, 1);
     assert.equal(json.relayInPanel.lastRejectReason, "chunk-size-mismatch");
     assert.ok(!JSON.stringify(json).includes("test-secret"));
