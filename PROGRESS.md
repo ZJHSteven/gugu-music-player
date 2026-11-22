@@ -1,4 +1,12 @@
-# 云端版最新状态（2026-11-20）
+# 云端版最新状态（2026-11-23 北京时间）
+
+## 2026-11-23：梅林 v3.3.1 音频收包停滞，v3.3.2 已正式发布
+
+- **梅林真实诊断证据**：Windows Edge/PLAYER，Owlbear SDK ready、roomId、房间音乐状态v1 rev6501及playingInRoom全部正常，room metadata 4243B、pointerFits=true；后台/面板两个独立 Relay Peer 在线，分别发起10/17次请求、超时9/16次。GM提供端在DO累计发送/转发59,123,169B（多轮重复），但面板累计接收524,288B、后台0B，当前未完成分块、SHA256 verified=0，播放器 `readyState=0`、`sourceType=null`。**此轮故障发生在音频二进制传输/浏览器收包阶段，不是当前会话缺失、16KiB容量或音频解码失败**。Cloudflare的转发计数不能等同于接收端实际收包。
+- **修复**：在v3.3.2中，新接收端通过 `need.flowControl="ack-v1"` 协商端到端流控，DO在serve转交协商；新版发送端每256KiB等待对端ACK，5秒无确认会重发同一块最多4次，下一块不会提前积压到目标。接收端对重复块/已缓存文件仍发ACK，防旧版8块末端死锁。老版收件人未协商时保留原无ACK发送路径；新旧浏览器可混用。增强匿名诊断：receivedFrames/resentFrames/lastChunkIndex，不收集IP、歌名或房间密钥。因公网收包不完整的真正物理原因仍可能是下游网络/浏览器节流，修复针对传输控制与自动恢复，不宣称证实唯一根因。
+- **自动验收**：Cloud单测65/65、原Node42/42、EdgeUI61/61、构建/静态校验通过。隔离本地真实DO随机房间，两名PLAYER同时各接收2,188,046B、故意丢一次ACK后SHA256完全一致；正式公网 `wss://music.zjhstudio.com/relay` 同样通过双PLAYER逐块ACK+丢ACK重发+SHA256（约18.8秒），旧协议3145745B基线亦校验通过（约17.4秒）。正式在线入口6/6 HTTP200+CORS，全部34个构建静态资产线上SHA256逐一比对34/34一致。**梅林本人/他当前GM真实Edge出声仍未验收**。
+- **生产发布**：Cloudflare Worker `gugu-music-cloud` 新版本 `0384c3b8-8837-4f49-9737-5ac579103c83`，2026-11-22T16:01:15Z正式部署并经Wrangler记录确认为100%流量；`https://music.zjhstudio.com` manifest版本3.3.2。上一稳定版本3.3.1 `4e2834f2-f129-4436-b372-d89ff6690710` 保留回滚可选。工作目录D:\\Workspace\\gugu-music-player-cloud，分支feat/cloud-do-opfs。
+- **下一步**：让梅林与GM都硬刷新Owlbear重新加载v3.3.2（双方诊断版本需一致），用同一roomMatchCode核对；梅林先等待歌曲缓存并留出一次30秒以上接收窗口，再生成诊断，重点看 `receivedFrames`/`resentFrames`/`lastChunkIndex`/`filesVerified`及实际media.playing；若仍卡住，则用新的发送端重传记录判断下游网络/Edge背景节流/实际断线。独立继续iPhone Safari真机声音与后台、P40小停顿、真实长时间同步和macOS Electron QA；不要混淆这些待验收项与本次已发布代码。
 
 ## 2026-11-20：v3.3.1 元数据容量诊断已正式发布（最高优先级）
 
