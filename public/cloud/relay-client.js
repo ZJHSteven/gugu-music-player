@@ -6,6 +6,9 @@
  *
  * 失败时按整个文件重试，而不是保留不完整文件；收到的音频必须先校验
  * SHA-256 才能进入 OPFS/IndexedDB。最大 64 MiB，单块 256 KiB。
+ *
+ * 诊断分三层计数：浏览器原始WebSocket消息、二进制协议解析、接收状态机。
+ * 特别不能拿DO的forwardedBytes（只证明调用了send）当浏览器实际收包量。
  */
 import { CHUNK_SIZE, MAX_AUDIO_SIZE, HASH_RE, decodeChunk, encodeChunk } from "./wire.js";
 import { getAudio, putAudio, digest } from "./storage.js";
@@ -25,7 +28,12 @@ export class RelayClient {
     this.events = [];
     this.metrics = { requested: 0, receivedBytes: 0, verified: 0,
       sendQueuedBytes: 0, reconnects: 0, unavailable: 0, timeouts: 0,
-      receivedFrames: 0, resentFrames: 0, lastChunkIndex: -1 };
+      receivedFrames: 0, resentFrames: 0, lastChunkIndex: -1,
+      // rawBinary*在ws.onmessage入口递增，还没有运行任何音频头校验。
+      rawBinaryMessages: 0, rawBinaryBytes: 0, rawBinaryKind: null,
+      parsedFrames: 0, rejectedFrames: 0, lastRejectReason: null,
+      duplicateFrames: 0, controlMessages: 0,
+      timedOutPartialBytes: 0, timedOutPartialChunks: 0 };
     this.onError = (error) => {
       this.note("error", { name: String(error?.name || "Error").slice(0, 35) });
       onError(error);
@@ -63,6 +71,13 @@ export class RelayClient {
   note(type, fields = {}) {
     this.events.push({ at: new Date().toISOString(), type, ...fields });
     if (this.events.length > 50) this.events.shift();
+  }
+
+  /** 在收包中途明确记录拒绝原因。只留白名单原因，不记录任何原始字节。 */
+  rejectFrame(reason) {
+    this.metrics.rejectedFrames++;
+    this.metrics.lastRejectReason = reason;
+    this.note("frame-rejected", { reason });
   }
 
   /** 供普通玩家一键复制的匿名诊断，不包含 roomId、secret、完整 hash。 */
@@ -166,6 +181,13 @@ export class RelayClient {
       this.transferTimeouts.delete(hash);
       if (this.stopped || this.owned.has(hash)) return;
       this.metrics.timeouts++;
+      // 旧版超时会清空 incoming，导致报告里「当前已收0B」掩盖
+      // 本次超时前实际收到的部分数据。记录清空之前的分块数量。
+      const partial = this.incoming.get(hash);
+      if (partial) {
+        this.metrics.timedOutPartialBytes += partial.size;
+        this.metrics.timedOutPartialChunks += partial.chunks.filter(Boolean).length;
+      }
       this.note("timeout", { hash: hash.slice(0, 10) });
       // 可能刚好错过了其他 iframe 的广播。仅在本次重传前再查一次本地
       // OPFS/IDB；如果文件已有完整副本，就不需要再次向公网请求。
@@ -231,8 +253,18 @@ export class RelayClient {
       this.updateTracks(this.tracks, this.priorityTrackId).catch(this.onError);
     };
     ws.onmessage = (e) => {
-      if (typeof e.data === "string") this.onControl(e.data);
-      else this.onChunk(e.data).catch(this.onError);
+      if (typeof e.data === "string") {
+        this.metrics.controlMessages++;
+        this.onControl(e.data);
+        return;
+      }
+      // 此处计数独立于解析成败。若DO已转发几十MB而rawBinaryMessages=0，
+      // 就要检查Cloudflare下行/浏览器是否真正派发message事件。
+      this.metrics.rawBinaryMessages++;
+      this.metrics.rawBinaryKind = e.data instanceof ArrayBuffer ? "arraybuffer" :
+        e.data instanceof Blob ? "blob" : "other";
+      this.metrics.rawBinaryBytes += e.data?.byteLength ?? e.data?.size ?? 0;
+      this.onChunk(e.data).catch(this.onError);
     };
     ws.onclose = (event) => {
       if (this.ws !== ws) return;
@@ -369,16 +401,26 @@ export class RelayClient {
   async onChunk(raw) {
     let decoded;
     try {
+      // 通常 binaryType=arraybuffer，但部分WebView/恢复场景仍可能给Blob。
+      // 不应因一种合法二进制承载类型就把实际到达的数据判成坏帧。
+      if (raw instanceof Blob) raw = await raw.arrayBuffer();
       decoded = decodeChunk(raw);
     } catch (error) {
       // 切勿把原始二进制帧/房间地址写入诊断，只标识失败阶段。
+      this.rejectFrame("invalid-frame");
       this.note("failure", { phase: "wire", reason: "invalid-frame" });
       throw error;
     }
     const { header, bytes } = decoded;
+    this.metrics.parsedFrames++;
     const t = this.tracks.find((t) => t.hash === header.hash);
-    if (!t || t.size > MAX_AUDIO_SIZE || !Number.isSafeInteger(t.size)) return;
-    if (header.total !== Math.ceil(t.size / CHUNK_SIZE)) return;
+    if (!t) return this.rejectFrame("untracked-hash");
+    if (t.size > MAX_AUDIO_SIZE || !Number.isSafeInteger(t.size)) {
+      return this.rejectFrame("invalid-track-size");
+    }
+    if (header.total !== Math.ceil(t.size / CHUNK_SIZE)) {
+      return this.rejectFrame("chunk-total-mismatch");
+    }
     if (this.owned.has(header.hash)) {
       // 文件可能刚被兄弟 iframe 缓存。仍对每块重发 ACK，避免
       // 新版发送者因第一块已存在便永远收不到确认。
@@ -391,13 +433,14 @@ export class RelayClient {
       this.incoming.set(header.hash, rec);
     }
     if (rec.complete || rec.chunks[header.index]) {
+      this.metrics.duplicateFrames++;
       // ACK 在网络中丢失时，发送者会重发同一块。必须重发确认，
       // 否则发送者永远不敢继续发送下一块，重现旧版「8块处卡死」。
       this.send({ t: "ack", hash: header.hash, to: header.from, index: header.index });
       return;
     }
     const expected = Math.min(CHUNK_SIZE, t.size - header.index * CHUNK_SIZE);
-    if (bytes.byteLength !== expected) return;
+    if (bytes.byteLength !== expected) return this.rejectFrame("chunk-size-mismatch");
     rec.chunks[header.index] = bytes.slice();
     rec.size += bytes.byteLength;
     this.metrics.receivedBytes += bytes.byteLength;

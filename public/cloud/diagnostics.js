@@ -24,7 +24,7 @@ function eventSummary(value) {
   const types = new Set([
     "connected", "disconnected", "socket-error", "identified", "failure",
     "request", "timeout", "error", "unavailable", "sent-queued", "verified", "resend",
-    "media-error", "playing", "pause", "waiting", "seeking", "play-rejected",
+    "frame-rejected", "media-error", "playing", "pause", "waiting", "seeking", "play-rejected",
     "native-loop", "plan-transition", "next-preload", "clock-recovery",
   ]);
   return value.slice(-20).filter((e) => types.has(e?.type)).map((e) => ({
@@ -38,7 +38,8 @@ function eventSummary(value) {
     position: finite(e.position),
     phase: ["wire", "integrity", "storage", "notification"].includes(e.phase)
       ? e.phase : null,
-    reason: ["invalid-frame", "hash-mismatch", "storage-failed", "processing-failed"].includes(e.reason)
+    reason: ["invalid-frame", "hash-mismatch", "storage-failed", "processing-failed",
+      "untracked-hash", "invalid-track-size", "chunk-total-mismatch", "chunk-size-mismatch"].includes(e.reason)
       ? e.reason : null,
     storage: ["opfs", "indexeddb", "memory"].includes(e.storage)
       ? e.storage : null,
@@ -62,6 +63,19 @@ function relayStatus(r) {
     receivedFrames: finite(r.receivedFrames),
     resentFrames: finite(r.resentFrames),
     lastChunkIndex: finite(r.lastChunkIndex),
+    rawBinaryMessages: finite(r.rawBinaryMessages),
+    rawBinaryBytes: finite(r.rawBinaryBytes),
+    rawBinaryKind: ["arraybuffer", "blob", "other"].includes(r.rawBinaryKind)
+      ? r.rawBinaryKind : null,
+    parsedFrames: finite(r.parsedFrames),
+    rejectedFrames: finite(r.rejectedFrames),
+    lastRejectReason: ["invalid-frame", "untracked-hash", "invalid-track-size",
+      "chunk-total-mismatch", "chunk-size-mismatch"].includes(r.lastRejectReason)
+      ? r.lastRejectReason : null,
+    duplicateFrames: finite(r.duplicateFrames),
+    controlMessages: finite(r.controlMessages),
+    timedOutPartialBytes: finite(r.timedOutPartialBytes),
+    timedOutPartialChunks: finite(r.timedOutPartialChunks),
     unavailable: finite(r.unavailable),
     files: (r.files || []).slice(0, 12).map((f) => ({
       hash: short(f.hash, 10),
