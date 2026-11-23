@@ -1,3 +1,12 @@
+# 2026-11-23 · 云端 v3.3.4 正式发布与真实浏览器验收
+
+- **正式部署成功**：Cloudflare Worker `gugu-music-cloud`，版本 ID `21ec6524-587d-4050-92d9-91a4ad9092a1`；保留原域名 `https://music.zjhstudio.com` 及既有 Owlbear 扩展配置，正式 manifest `version=3.3.4`，在线 6/6 HTTP 200+CORS 全通过。
+- **B 站功能暂不支持但保留输入 UI**：在正式云版里提交 BV 号/B 站链接立即弹出“暂不支持”，不外呼 B 站、不调用 Worker 网关；生产 `/api/bilibili/resolve` 返回 404。此前试验性的 B 站抓取 Worker 模块/路由已删除，两个临时部署 `gugu-bili-api-probe-1123` 与 `gugu-music-bili-preview-20261123` 已删除。原版 Node 后台及 Cloudflare 临时隧道均已停止，Owlbear 房间仅保留云端版启用；原 Node 路径源码只保留兼容测试，不参与部署。
+- **音频直链已上线且 E2E 验收通过**：GM 支持 HTTPS+CORS 音源链接及可选标题，在浏览器下载完整音频、按 64MiB 上限和真实媒体文件头校验后写 OPFS、生成 SHA256，并由现有 DO 中继广播可供音频。隔离测试房间实际导入 MP3 `39868B`，歌单项 kind=url、hash 64 hex、mime=audio/mpeg，`writeAttempts=2`、`writeFailures=0`；ZIP 备份实得 `40529B`，PK 文件头通过，未向真实 Owlbear 房间添加测试曲目。URL 的临时参数不进入共享曲目元数据。
+- **设置页收纳日志**：GM 的诊断区域只在“设置”显示，PLAYER 增加按需设置/诊断入口，歌单页不再显示冗长日志；顶部快捷按钮改为“设置”。在生产域名隔离 devroom 真浏览器验证 BV 提交的 B 站网关 fetch 次数为 0，设置页备份/诊断入口存在，歌单页隐藏诊断；修复“已导入、未播放”时误显示“歌单是空的”。
+- **DO 休眠/费用**：Worker 仅保留现有 `/relay`、`/room-state`、`/relay-diagnostics` 按需业务，`assets.run_worker_first=["/relay"]`；DO 通过 `ctx.acceptWebSocket` 与持久 attachment 支持空闲休眠，无新增 B 站网络抓取、定时器、闹钟、Node 常驻音频服务器。房间播放同步仍由 Owlbear Metadata/Broadcast 与浏览器时间轴完成，DO 主要做有需要时的音频转发和状态快照。
+- **回归**：Cloud 单测 77/77、Node selftest 42/42、Wrangler dry-run、正式构建、线上 CORS/静态资源验证通过。旧 Node 的 Edge UI 测试 60/61：唯一未过的“暂停在1秒内传到玩家（长轮询）”属遗留 `sync=long` 路径的间歇性延迟，非云版 DO；如需维护 Node 再专项排查，不应将其误记为全绿。正式云端独立 E2E 导入与备份验证通过。
+- **待后续**：B 站 BV 自动提取不在 v3.3.4 范围内；用户计划后续单独处理可靠的音频获取渠道，未恢复旧版常驻代理。
 # 云端版最新状态（2026-11-23 北京时间）
 
 ## 2026-11-23：v3.3.3 二次源码审计、主动探针与房间供源已落实
