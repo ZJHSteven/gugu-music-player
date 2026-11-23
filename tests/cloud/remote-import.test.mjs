@@ -109,4 +109,3 @@ test("诊断只在设置页按需展示，歌单页不再附带日志区",async(
   assert.match(app,/function playerSettingsView\(\)/);
   assert.doesNotMatch(app,/\(S\.role === "GM" \? gmView\(\) : playerView\(\)\) \+ diagnosticsView\(\)/);
 });
-

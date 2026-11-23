@@ -321,7 +321,7 @@ function nowCard(seekable) {
     // 歌单已经导入，但尚未点播第一首时，不应再显示“歌单是空的”。
     // 云版导入成功不会自动播放：由 GM 明确点歌或按播放键才开始。
     const hasPlaylist = (S.state?.playlist?.length || 0) > 0;
-    return `<div class="now"><div class="empty">${ 
+    return `<div class="now"><div class="empty">${
       S.role === "GM"
         ? (hasPlaylist ? "尚未开始播放 —— 请点歌单曲目或播放键" : "歌单是空的 —— 去「添加」放一首")
         : "GM 还没开始播放"
