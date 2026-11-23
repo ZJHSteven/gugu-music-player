@@ -90,6 +90,8 @@ test("云版音频入口保留直链并显示 Parabolic 手动下载提示",asyn
   assert.match(app,/id="direct-url"/);
   assert.match(app,/https:\/\/github\.com\/NickvisionApps\/Parabolic\/releases/);
   assert.match(app,/B 站 \/ YouTube 音频可使用/);
+  assert.match(app,/可上传本地音频或输入 HTTPS 音频直链/);
+  assert.doesNotMatch(app,/可选择文件、B 站 BV 号或音频直链/);
   assert.match(app,/target="_blank" rel="noopener noreferrer"/);
 });
 test("生产 Worker 仅处理 DO 按需路径；无 B站抓取路由、外呼、常驻定时器",async()=>{

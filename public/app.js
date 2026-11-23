@@ -461,7 +461,7 @@ function listView(list) {
 
   const bar = folderBar();
   if (!list.length) {
-    return `${bar}<div class="empty">${icon("music")}<div>还没有曲目</div><div>${window.BARD_CLOUD ? "切到「添加」，可选择文件、B 站 BV 号或音频直链" : "切到「添加」，放本地文件或粘贴 B 站链接"}</div></div>`;
+    return `${bar}<div class="empty">${icon("music")}<div>还没有曲目</div><div>${window.BARD_CLOUD ? "切到「添加」，可上传本地音频或输入 HTTPS 音频直链" : "切到「添加」，放本地文件或粘贴 B 站链接"}</div></div>`;
   }
   if (!shown.length) {
     return `${bar}<div class="empty">${icon("music")}<div>这个分类还是空的</div><div>切到「添加」上传，曲目会进到当前分类</div></div>`;
