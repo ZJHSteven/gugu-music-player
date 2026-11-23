@@ -389,6 +389,17 @@ async function main() {
 
     console.log("\n[E] 玩家视图");
     const player = await openTab(`${BASE}/?dev=1&role=PLAYER&room=${ROOM}`);
+    // 独立 PLAYER 标签页的 OBR SDK/模块初始化是异步的。
+    // 仅等待页面导航完成不等于状态已经准备好；负载较高时旧测试偶发
+    // 读到初始徽章“…”和空的操作区，造成两个与播放无关的假阴性。
+    // 用有上限的就绪轮询，而不是全局延长所有测试的固定 sleep。
+    for (let i = 0; i < 24; i++) {
+      const playerReady = await player.evaluate(
+        `document.getElementById('role')?.textContent === '玩家' &&
+          Boolean(document.querySelector('[data-act="vol"]'))`);
+      if (playerReady) break;
+      await sleep(250);
+    }
     check("徽章显示玩家", (await player.evaluate(`document.getElementById('role').textContent`)) === "玩家");
     check("玩家看不到歌单", (await player.evaluate(`document.querySelectorAll('.row').length`)) === 0);
     check("玩家没有播放控制", !(await player.evaluate(`Boolean(document.querySelector('[data-act="toggle"]'))`)));
