@@ -40,6 +40,22 @@ test("网页响应、过大音频、空结果与HTTP错误均不入库",async()=
   await assert.rejects(()=>responseToAudioFile(new Response(null),{url:"https://x.org/x.mp3"}),/内容/);
   await assert.rejects(()=>responseToAudioFile(new Response("404",{status:404}),{url:"https://x.org/x.mp3"}),/404/);
 });
+test("错误页面即使伪装成音频 MIME 或 mp3 扩展名，也不能假成功", async () => {
+  const fake = new Response("<!DOCTYPE html><title>Access denied</title>", {
+    headers: { "Content-Type": "audio/mpeg" },
+  });
+  await assert.rejects(() => responseToAudioFile(fake, {
+    url: "https://example.org/track.mp3", title: "假文件",
+  }), /文件头不是支持的音频/);
+});
+test("真实内容是 MP4 时应覆盖错误的 .mp3 扩展名及 MIME", async () => {
+  const mp4 = Uint8Array.from([0,0,0,24,102,116,121,112,77,52,65,32,0,0,0,0,0,0,0,0,0,0,0,0]);
+  const file = await responseToAudioFile(new Response(mp4, {
+    headers: { "Content-Type": "audio/mpeg" },
+  }), { url: "https://example.org/misnamed.mp3", title: "混合容器" });
+  assert.equal(file.type, "audio/mp4");
+  assert.equal(file.name, "混合容器.m4a");
+});
 test("直链在共享歌单中只留下内容哈希，不留下可能敏感的来源URL",()=>{
   let state=createState("1".repeat(32));
   state=addTrack(state,{kind:"url",title:"配乐",hash:"b".repeat(64),size:456,

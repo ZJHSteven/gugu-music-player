@@ -27,10 +27,10 @@ export function filenameOf(url,title="",mimeHint=""){
   let fromPath="";
   try{fromPath=decodeURIComponent(u.pathname.split("/").pop()||"")}catch{}
   const ext=(/\.([a-z0-9]{2,5})$/i.exec(fromPath)?.[1]||"").toLowerCase();
-  const mime=byExt[ext]||mimeHint.split(";")[0].toLowerCase().trim();
+  const mime=mimeHint.split(";")[0].toLowerCase().trim()||byExt[ext];
   // 网络音源有时会将 .mp3 扩展名对应的内容改为 MP4；
   // 如果检测到了与扩展名不一致的 MIME，以真实媒体类型选取扩展名。
-  const extension=byExt[ext]&&(!mimeHint||byExt[ext]===mimeHint)?ext:extOfMime(mime);
+  const extension=byExt[ext]&&(!mimeHint||byExt[ext]===mime)?ext:extOfMime(mime);
   const name=String(title||fromPath.replace(/\.[^.]+$/,"")||"直链音频")
     .replace(/[\x00-\x1f\\/:*?"<>|]/g,"_").trim().slice(0,110)||"直链音频";
   return {name:name+"."+extension,mime:byExt[extension]||mime||"audio/mpeg"};
