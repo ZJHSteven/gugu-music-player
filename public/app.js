@@ -517,6 +517,7 @@ function addView() {
       up.done ? `已完成 ${up.done} 个` : `${esc(up.name)} · ${Math.round(up.pct * 100)}%`
     }</span></div>` : ""}
   </div>
+  ${!window.BARD_CLOUD ? `
   <div class="field">
     <div class="label">B 站视频 <span class="hint">预留入口，暂不支持</span></div>
     <div class="row2">
@@ -528,6 +529,7 @@ function addView() {
     </div>
     <div class="foot" style="text-align:left;padding-top:6px">BV 号、B 站视频链接输入框已保留。点击添加会提示暂不支持，现阶段不会连接 B 站或消耗云端抓取资源。</div>
   </div>
+  ` : ""}
   ${window.BARD_CLOUD ? `
   <div class="field">
     <div class="label">音频直链 <span class="hint">HTTPS，需允许浏览器跨域下载</span></div>
@@ -542,6 +544,7 @@ function addView() {
     </div>
     <div class="foot" style="text-align:left;padding-top:6px">只保存已成功下载的音频到浏览器 OPFS；不把直链、授权参数或 Cookie 发送给房间成员。</div>
   </div>
+  <div class="foot" style="text-align:left">B 站 / YouTube 音频可使用 <a href="https://github.com/NickvisionApps/Parabolic/releases" target="_blank" rel="noopener noreferrer">Parabolic（yt-dlp 图形版）</a> 下载，再从上方「本地音乐」上传。</div>
   <div class="foot" style="text-align:left">歌曲保存在成员浏览器本地，缺失内容通过房间中继共享。请在设置中定期导出 ZIP 备份。</div>` : ""}
   `;
 }
