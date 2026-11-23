@@ -73,7 +73,12 @@ test("BV号/视频链接入口保留，但点击只提示暂不支持，不触�
   assert.match(body,/暂不支持/);
   assert.match(app,/id="bili"/);
   assert.match(app,/data-act="add-bili"/);
-  assert.doesNotMatch(body,/fetch\s*\(|apiPost\s*\(|uploadTrack\s*\(|setInterval\s*\(/);
+  // 保留原版 Node 兼容路径，但云版分支先 toast + return，不会调用它。
+  const cloudPart=body.split('if (window.BARD_CLOUD) {')[1]?.split('if (S.busy)')[0];
+  assert.ok(cloudPart);
+  assert.match(cloudPart,/toast\(/);
+  assert.match(cloudPart,/return;/);
+  assert.doesNotMatch(cloudPart,/fetch\s*\(|apiPost\s*\(|uploadTrack\s*\(|setInterval\s*\(/);
   assert.doesNotMatch(app,/\/api\/bilibili\/(?:resolve|audio)/);
 });
 test("生产 Worker 仅处理 DO 按需路径；无 B站抓取路由、外呼、常驻定时器",async()=>{

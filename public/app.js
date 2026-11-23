@@ -805,11 +805,32 @@ function release() {
  * 云版以 OPFS + 按需 DO 中继为核心，不为了兼容旧链接而恢复常驻代理。
  * 用户输入仍然保留，以便后续恢复导入功能。
  */
-function addBilibili() {
+async function addBilibili() {
   const input = (document.getElementById("bili")?.value || S.biliUrl || "").trim();
   if (!input) return toast("请先输入 B 站 BV 号或视频链接", "warn");
   S.biliUrl = input;
-  toast("B 站 BV 号／视频链接导入暂不支持。该入口已保留，后续恢复；本次不会请求 B 站，也不会占用云端抓取资源。", "warn", 8500);
+  // 正式云版只在浏览器里给出明确提示：不请求 B 站，也不请求任何 Worker 网关。
+  // 下方的 Node 路径仅为保留原版兼容性测试；旧版服务器已停止且不会部署，
+  // 因此不会在云端消耗服务器、DO、网络出口资源。
+  if (window.BARD_CLOUD) {
+    toast("B 站 BV 号／视频链接导入暂不支持。该入口已保留，后续恢复；本次不会请求 B 站，也不会占用云端抓取资源。", "warn", 8500);
+    return;
+  }
+  if (S.busy) return;
+  S.busy = "bili";
+  render(true);
+  try {
+    await apiPost(`/api/rooms/${encodeURIComponent(S.roomId)}/tracks/bilibili`,
+      { url: input, folder: activeFolder() }, token());
+    S.biliUrl = "";
+    toast("已加入歌单");
+    await refreshState();
+  } catch (err) {
+    toast(err.message, "err", 8500);
+  } finally {
+    S.busy = "";
+    render(true);
+  }
 }
 
 async function addDirectAudio() {
