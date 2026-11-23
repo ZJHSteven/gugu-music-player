@@ -6,6 +6,7 @@ import { makeDiagnosticReport } from "./cloud/diagnostics.js";
 import { anonymousRoomCode } from "./cloud/metadata-inspection.js";
 import { shouldRetryOwlbear, resetOwlbearRetries } from "./obr-identity.js";
 import { IosSyncAudio } from "./cloud/ios-sync-audio.js";
+import { downloadDirectAudio } from "./cloud/remote-import.js";
 
 window.__appBuild = "build-folders-1";
 
@@ -51,6 +52,9 @@ const S = {
   notice: null,
   claimError: "",
   biliUrl: "",
+  directUrl: "",
+  directTitle: "",
+  playerSettingsOpen: false,
   drag: null,
   folderTab: "__all",
   openFolderFor: null,
@@ -149,6 +153,7 @@ function render(force) {
       folderTab: S.folderTab,
       folders: (S.state?.folders || []).join("|"),
       fmap: (S.state?.playlist || []).map((t) => t.folder || "").join("|"),
+      playerSettingsOpen: S.playerSettingsOpen,
       diagnosticsOpen: S.diagnosticsOpen,
       diagnosticsBusy: S.diagnosticsBusy,
       diagnosticsReport: S.diagnosticsReport,
@@ -164,7 +169,7 @@ function render(force) {
     const view = document.getElementById("view");
     const oldScrollTop = view.scrollTop;
     view.innerHTML =
-      (S.role === "GM" ? gmView() : playerView()) + diagnosticsView();
+      (S.role === "GM" ? gmView() : playerView());
     // 房间每轮循环、诊断刷新时不再重置内部滚动位置。
     view.scrollTop = oldScrollTop;
     if (S.revealDiagnostics) {
@@ -391,7 +396,7 @@ function gmView() {
     .map(([k, t]) => `<button class="tab ${S.tab === k ? "active" : ""}" data-act="tab" data-tab="${k}">${t}</button>`)
     .join("")}</div>`;
 
-  const body = S.tab === "add" ? addView() : S.tab === "settings" ? settingsView() : listView(list);
+  const body = S.tab === "add" ? addView() : S.tab === "settings" ? settingsView() + diagnosticsView() : listView(list);
   const blocked = S.status.blocked
     ? `<button class="unlock" data-act="unlock">${icon("volume")}浏览器拦截了声音，点这里开启</button>`
     : "";
@@ -451,7 +456,7 @@ function listView(list) {
 
   const bar = folderBar();
   if (!list.length) {
-    return `${bar}<div class="empty">${icon("music")}<div>还没有曲目</div><div>${window.BARD_CLOUD ? "切到「添加」，从本地选择音频并共享给房间" : "切到「添加」，放本地文件或粘贴 B 站链接"}</div></div>`;
+    return `${bar}<div class="empty">${icon("music")}<div>还没有曲目</div><div>${window.BARD_CLOUD ? "切到「添加」，可选择文件、B 站 BV 号或音频直链" : "切到「添加」，放本地文件或粘贴 B 站链接"}</div></div>`;
   }
   if (!shown.length) {
     return `${bar}<div class="empty">${icon("music")}<div>这个分类还是空的</div><div>切到「添加」上传，曲目会进到当前分类</div></div>`;
@@ -477,7 +482,7 @@ function listView(list) {
       <span class="idx">${on ? "▶" : i + 1}</span>
       <div class="row-main" data-act="pick" data-id="${esc(t.id)}">
         <div class="row-title">${esc(t.title || "未命名")}</div>
-        <div class="row-sub"><span class="tag ${t.kind}">${t.kind === "bilibili" ? "B站" : "本地"}</span>
+        <div class="row-sub"><span class="tag ${t.kind}">${t.kind === "bilibili" ? "B站" : t.kind === "url" ? "直链" : "本地"}</span>
           <span>${esc(t.artist || "")}</span>${
             t.folder ? `<span class="tag folder-tag">${esc(t.folder)}</span>` : ""
           }${t.duration > 0 ? `<span>${fmt(t.duration)}</span>` : ""}</div>
@@ -501,21 +506,39 @@ function addView() {
     <div class="label">本地音乐 <span class="hint">mp3 / m4a / ogg / wav</span></div>
     <label class="drop" for="file">${icon("upload")}<div>点击选择，或把音频拖进来</div>
       <small>上传后全房间都能听到</small></label>
-    <input id="file" type="file" accept="audio/*,.mp3,.m4a,.ogg,.wav,.flac" multiple style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none" />
+    <input id="file" type="file" accept="audio/*,.mp3,.m4a,.ogg,.wav,.flac" multiple
+      style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none" />
     ${up ? `<div class="notice">${up.done ? "" : '<span class="spin"></span>'}<span>${
       up.done ? `已完成 ${up.done} 个` : `${esc(up.name)} · ${Math.round(up.pct * 100)}%`
     }</span></div>` : ""}
   </div>
-  ${window.BARD_CLOUD ? '<div class="foot" style="text-align:left">云版歌曲保存在所有成员的浏览器本地，缺少的音频会通过房间中继自动共享。请保留额外备份。</div>' : `<div class="field">
-    <div class="label">B 站视频 <span class="hint">只取音轨</span></div>
+  <div class="field">
+    <div class="label">B 站视频 <span class="hint">预留入口，暂不支持</span></div>
     <div class="row2">
-      <input class="input" id="bili" placeholder="粘贴视频链接 / BV 号" value="${esc(S.biliUrl)}" />
-      <button class="btn primary" data-act="add-bili" ${S.busy === "bili" ? "disabled" : ""}>${
-    S.busy === "bili" ? "解析中…" : "添加"
-  }</button>
+      <input class="input" id="bili" placeholder="B站视频链接 / BV 号 / av 号"
+        value="${esc(S.biliUrl)}" />
+      <button class="btn primary" data-act="add-bili" ${S.busy ? "disabled" : ""}>${
+        S.busy === "bili" ? "导入中…" : "添加"
+      }</button>
     </div>
-    <div class="foot" style="text-align:left;padding-top:6px">支持 bilibili.com/video/BV…、b23.tv 短链、av 号</div>
-  </div>`}`;
+    <div class="foot" style="text-align:left;padding-top:6px">BV 号、B 站视频链接输入框已保留。点击添加会提示暂不支持，现阶段不会连接 B 站或消耗云端抓取资源。</div>
+  </div>
+  ${window.BARD_CLOUD ? `
+  <div class="field">
+    <div class="label">音频直链 <span class="hint">HTTPS，需允许浏览器跨域下载</span></div>
+    <input class="input" id="direct-url" placeholder="https://…/music.mp3"
+      value="${esc(S.directUrl)}" />
+    <div class="row2" style="margin-top:8px">
+      <input class="input" id="direct-title" placeholder="歌曲名称（可选）"
+        value="${esc(S.directTitle)}" />
+      <button class="btn primary" data-act="add-direct" ${S.busy ? "disabled" : ""}>${
+        S.busy === "direct" ? "导入中…" : "添加"
+      }</button>
+    </div>
+    <div class="foot" style="text-align:left;padding-top:6px">只保存已成功下载的音频到浏览器 OPFS；不把直链、授权参数或 Cookie 发送给房间成员。</div>
+  </div>
+  <div class="foot" style="text-align:left">歌曲保存在成员浏览器本地，缺失内容通过房间中继共享。请在设置中定期导出 ZIP 备份。</div>` : ""}
+  `;
 }
 
 /** 云版才有的完整离线备份入口；原 Node/Electron 版布局保持原样。 */
@@ -578,6 +601,16 @@ function settingsView() {
   <div class="foot">控制权靠心跳保持，关掉浏览器 90 秒后别人可接管。</div>`}`;
 }
 
+function playerSettingsView() {
+  if (!window.BARD_CLOUD) return "";
+  return `<div class="field player-settings">
+    <button class="btn block" data-act="player-settings">${
+      S.playerSettingsOpen ? "收起设置" : "设置与诊断"
+    }</button>
+    ${S.playerSettingsOpen ? diagnosticsView() : ""}
+  </div>`;
+}
+
 function playerView() {
   const hasTrack = Boolean(S.now?.track);
   const vol = Math.round((S.status.volume ?? 0.85) * 100);
@@ -597,7 +630,8 @@ function playerView() {
     <div class="field">
       <div class="label">我的音量 <span class="hint">${vol}%</span></div>
       <div class="vol"><input type="range" min="0" max="100" value="${vol}" data-act="vol" /></div>
-    </div>`;
+    </div>
+    ${playerSettingsView()}`;
   }
   // 房间还没人控制：给主持一个入口（OBR 偶尔会把 GM 报成 PLAYER）
   const canClaim = !window.BARD_CLOUD && !S.now?.owner;
@@ -614,7 +648,8 @@ function playerView() {
     <div class="label">我的音量 <span class="hint">${vol}%</span></div>
     <div class="vol"><input type="range" min="0" max="100" value="${vol}" data-act="vol" /></div>
   </div>
-  ${hasTrack ? "" : '<div class="player-note">GM 一开始播放，你就会自动听到。</div>'}`;
+  ${hasTrack ? "" : '<div class="player-note">GM 一开始播放，你就会自动听到。</div>'}
+  ${playerSettingsView()}`;
 }
 
 // 把进度条画到指定位置（拖动时由指针驱动，不走轮询）
@@ -759,20 +794,55 @@ function release() {
   toast("已让出控制权");
 }
 
-async function addBilibili() {
-  const url = (document.getElementById("bili")?.value || S.biliUrl || "").trim();
-  if (!url) return toast("先粘贴一个 B 站链接", "warn");
-  S.busy = "bili";
+/**
+ * 预留 B 站视频入口，不在此版本调用 B 站或 Cloudflare 的视频抓取接口。
+ * 原版 Node 代理要求一个能够访问 B 站并设置 Referer 的服务端，
+ * 云版以 OPFS + 按需 DO 中继为核心，不为了兼容旧链接而恢复常驻代理。
+ * 用户输入仍然保留，以便后续恢复导入功能。
+ */
+function addBilibili() {
+  const input = (document.getElementById("bili")?.value || S.biliUrl || "").trim();
+  if (!input) return toast("请先输入 B 站 BV 号或视频链接", "warn");
+  S.biliUrl = input;
+  toast("B 站 BV 号／视频链接导入暂不支持。该入口已保留，后续恢复；本次不会请求 B 站，也不会占用云端抓取资源。", "warn", 8500);
+}
+
+async function addDirectAudio() {
+  const url = (document.getElementById("direct-url")?.value || S.directUrl || "").trim();
+  const title = (document.getElementById("direct-title")?.value || S.directTitle || "").trim();
+  if (!url) return toast("先粘贴一个音频 HTTPS 直链", "warn");
+  if (S.busy) return;
+  S.directUrl = url;
+  S.directTitle = title;
+  S.busy = "direct";
+  S.uploading = { name: title || "正在读取音频直链", pct: 0.01 };
   render(true);
   try {
-    await apiPost(`/api/rooms/${encodeURIComponent(S.roomId)}/tracks/bilibili`, { url, folder: activeFolder() }, token());
-    S.biliUrl = "";
-    toast("已加入歌单");
+    const file = await downloadDirectAudio(url, {
+      title,
+      onProgress: p => {
+        S.uploading = { name: title || "音频直链", pct: p * 0.8 };
+        render();
+      },
+    });
+    const duration = await mediaDuration(file).catch(() => 0);
+    await uploadTrack({
+      roomId: S.roomId, token: token(), file, duration,
+      folder: activeFolder(), meta: { kind: "url" },
+      onProgress: p => {
+        S.uploading = { name: file.name, pct: 0.8 + p * 0.2 };
+        render();
+      },
+    });
+    S.directUrl = "";
+    S.directTitle = "";
+    toast("音频直链已完整导入歌单");
     await refreshState();
   } catch (err) {
-    toast(err.message, "err");
+    toast(`直链导入失败：${err.message}`, "err", 10000);
   } finally {
     S.busy = "";
+    S.uploading = null;
     render(true);
   }
 }
@@ -862,9 +932,12 @@ document.addEventListener("click", (ev) => {
 
   if (act === "tab") S.tab = el.dataset.tab;
   else if (act === "diag-jump") {
+    if (S.role === "GM") S.tab = "settings";
+    else S.playerSettingsOpen = true;
     S.diagnosticsOpen = true;
     S.revealDiagnostics = true;
   }
+  else if (act === "player-settings") S.playerSettingsOpen = !S.playerSettingsOpen;
   else if (act === "diag-toggle") {
     S.diagnosticsOpen = !S.diagnosticsOpen;
     if (S.diagnosticsOpen) S.revealDiagnostics = true;
@@ -880,6 +953,7 @@ document.addEventListener("click", (ev) => {
     askConfirm("从歌单移除这首？", { type: "playlist", op: "remove", trackId: id });
   } else if (act === "pick-file") document.getElementById("file")?.click();
   else if (act === "add-bili") addBilibili();
+  else if (act === "add-direct") addDirectAudio();
   else if (act === "backup-export") doExportBackup();
   else if (act === "backup-import") document.getElementById("backup-file")?.click();
   else if (act === "toggle-hide") command({ type: "settings", hideTitle: !S.state?.settings?.hideTitle });
@@ -1046,6 +1120,8 @@ async function seekTo(seconds) {
 document.addEventListener("input", (ev) => {
   const el = ev.target;
   if (el.id === "bili") S.biliUrl = el.value;
+  if (el.id === "direct-url") S.directUrl = el.value;
+  if (el.id === "direct-title") S.directTitle = el.value;
   else if (el.dataset.act === "vol") {
     markSlider();
     const v = Number(el.value) / 100;
