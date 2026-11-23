@@ -246,10 +246,12 @@ export function addTrack(state, track) {
   const next = structuredClone(state);
   next.playlist.push({
     id: crypto.randomUUID().slice(0, 12),
-    kind: "upload",
+    kind: ["upload", "bilibili", "url"].includes(track.kind) ? track.kind : "upload",
     title: String(track.title || "未命名").slice(0, 120),
-    artist: "",
-    cover: "",
+    artist: String(track.artist || "").slice(0, 120),
+    cover: String(track.cover || "").slice(0, 400),
+    ...(track.kind === "bilibili" && /^BV[0-9A-Za-z]{10}$/.test(track.bvid || "")
+      ? { bvid: track.bvid, cid: Number(track.cid) || 0, page: Number(track.page) || 1 } : {}),
     hash: track.hash,
     size: track.size,
     mime: track.mime || "audio/mpeg",

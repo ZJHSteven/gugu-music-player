@@ -102,10 +102,10 @@ export async function apiPost(path, body, token) {
 }
 
 /** 上传音频（XHR 才有上传进度）。 */
-export function uploadTrack({ roomId, token, file, duration, folder, onProgress }) {
+export function uploadTrack({ roomId, token, file, duration, folder, onProgress, meta }) {
   if (window.BARD_CLOUD) {
     if (!window.__cloudBridge) return Promise.reject(new Error("云端房间尚未初始化"));
-    return window.__cloudBridge.uploadTrack({ file, duration, folder, onProgress });
+    return window.__cloudBridge.uploadTrack({ file, duration, folder, onProgress, meta });
   }
   return new Promise((resolve, reject) => {
     const qs = new URLSearchParams({

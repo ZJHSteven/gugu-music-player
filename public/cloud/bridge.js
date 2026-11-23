@@ -436,7 +436,7 @@ export class CloudBridge {
     return this.initializingState;
   }
 
-  async uploadTrack({ file, duration, folder, onProgress }) {
+  async uploadTrack({ file, duration, folder, onProgress, meta = {} }) {
     if (!await this.isGM()) throw new Error("只有 Owlbear 房主可以添加歌曲");
     if (!file?.size || file.size > MAX_AUDIO_SIZE) throw new Error("单个音频文件必须在 0～64 MiB 之间");
     const hash = await digest(file);
@@ -445,8 +445,9 @@ export class CloudBridge {
     await requestPersistence();
     onProgress?.(0.6);
     const result = await this.change((s) => addTrack(s, {
-      hash, title: file.name.replace(/\.[^.]+$/, ""), size: file.size,
-      mime: file.type || "audio/mpeg", duration, folder,
+      ...meta,
+      hash, title: meta.title || file.name.replace(/\.[^.]+$/, ""), size: file.size,
+      mime: file.type || "audio/mpeg", duration: Number(meta.duration) > 0 ? Number(meta.duration) : duration, folder,
     }));
     await this.relay?.announce(hash);
     onProgress?.(1);
