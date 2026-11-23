@@ -64,7 +64,7 @@ test("直链在共享歌单中只留下内容哈希，不留下可能敏感的�
   assert.equal(state.playlist[0].title,"配乐");
   assert.ok(!JSON.stringify(state).includes("private"));
 });
-test("BV号/视频链接入口保留，但点击只提示暂不支持，不触发任何请求",async()=>{
+test("旧 Node BV 入口保留，云版隐藏且不触发任何请求",async()=>{
   const app=await readFile(new URL("../../public/app.js",import.meta.url),"utf8");
   const start=app.indexOf("function addBilibili() {");
   const end=app.indexOf("\nasync function addDirectAudio()",start);
@@ -73,6 +73,9 @@ test("BV号/视频链接入口保留，但点击只提示暂不支持，不触�
   assert.match(body,/暂不支持/);
   assert.match(app,/id="bili"/);
   assert.match(app,/data-act="add-bili"/);
+  // 原版 Node 可以保留旧入口，但云版必须直接隐藏，不能显示无效的 BV 输入框。
+  assert.ok(app.includes('${!window.BARD_CLOUD ? `'));
+  assert.ok(app.indexOf('${!window.BARD_CLOUD ? `') < app.indexOf('id="bili"'));
   // 保留原版 Node 兼容路径，但云版分支先 toast + return，不会调用它。
   const cloudPart=body.split('if (window.BARD_CLOUD) {')[1]?.split('if (S.busy)')[0];
   assert.ok(cloudPart);
@@ -80,6 +83,14 @@ test("BV号/视频链接入口保留，但点击只提示暂不支持，不触�
   assert.match(cloudPart,/return;/);
   assert.doesNotMatch(cloudPart,/fetch\s*\(|apiPost\s*\(|uploadTrack\s*\(|setInterval\s*\(/);
   assert.doesNotMatch(app,/\/api\/bilibili\/(?:resolve|audio)/);
+});
+test("云版音频入口保留直链并显示 Parabolic 手动下载提示",async()=>{
+  const app=await readFile(new URL("../../public/app.js",import.meta.url),"utf8");
+  assert.match(app,/id="file" type="file"/);
+  assert.match(app,/id="direct-url"/);
+  assert.match(app,/https:\/\/github\.com\/NickvisionApps\/Parabolic\/releases/);
+  assert.match(app,/B 站 \/ YouTube 音频可使用/);
+  assert.match(app,/target="_blank" rel="noopener noreferrer"/);
 });
 test("生产 Worker 仅处理 DO 按需路径；无 B站抓取路由、外呼、常驻定时器",async()=>{
   const worker=await readFile(new URL("../../cloud-worker/index.js",import.meta.url),"utf8");

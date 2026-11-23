@@ -1,3 +1,9 @@
+## 2026-11-23 · v3.3.5 云版音频导入界面精简（部署验证中）
+
+- 用户选择手动下载方案：Parabolic 开源图形下载器（底层 yt-dlp），下载 B 站 / YouTube 音频后再用咕咕 GM 现有本地音频上传入口导入。
+- 云版隐藏失效的 BV 输入框与添加按钮；保留 HTTPS+CORS 直链、本地音频导入、OPFS 与 DO 按需中继；添加单行官方 Parabolic GitHub Releases 链接，原 Node 模式兼容 BV 旧入口。
+- 版本号更新至 3.3.5，等待测试及生产验证。
+
 # 2026-11-23 · 云端 v3.3.4 正式发布与真实浏览器验收
 
 - **正式部署成功**：Cloudflare Worker `gugu-music-cloud`，版本 ID `21ec6524-587d-4050-92d9-91a4ad9092a1`；保留原域名 `https://music.zjhstudio.com` 及既有 Owlbear 扩展配置，正式 manifest `version=3.3.4`，在线 6/6 HTTP 200+CORS 全通过。
