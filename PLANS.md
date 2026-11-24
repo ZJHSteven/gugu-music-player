@@ -3,7 +3,8 @@
 - [x] 根据用户 iPhone Safari Owlbear 截图定位：旧 `public/style.css` 窄屏触屏规则将 `.app` 最高限制为 320px，黄色启用音频按钮下半截及余下区域被 `overflow:hidden` 裁掉。
 - [x] 取消固定 320px 限高及人为 150px 底部占位；移动端改用 iframe 的实际 100% 高度，保持 .main flex 独立滚动。
 - [x] 增加移动端 CSS 回归测试。CDP Chrome 模拟 390×650 触屏：旧规则 .app=320px，新规则 .app=650px；280px/620px 嵌套 iframe 都准确填满且可滚动到底部。
-- [ ] 云版/原 Node 回归、发布前检查、正式部署及线上版本验收、推送 fork 和上游 PR。
+- [x] 云版 84/84、原 Node 42/42 回归通过；build/verify/check-release/dry-run、正式部署与线上 HTTP/CORS 6/6 通过。真实 CDP Chrome 触屏窄屏正式站点 .app 高度 650px、与 iframe 650px 一致。
+- [ ] 完成最终 GitHub fork 推送、上游 PR 文案及 LifeOps 归档。
 
 ## 2026-11-24：v3.3.7 单曲不同版本补传与 PLAYER 快速就绪
 
