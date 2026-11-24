@@ -5,6 +5,8 @@
 - v3.3.11 将状态明确为“本机未检出有效缓存”“已请求音源 · 尚未完成”“当前无在线音源 · 可补传”“传输失败 · 请检查网络”“本机文件读取异常”“本机缓存校验不通过”。传输失败与当前无源分别处理，不再用 transfer-error 触发 audio-unavailable 广播。
 - 是否彻底丢失所有副本仍不能由当前协议自动证明；无在线音源时应当检查曾经存有文件的设备或直接补传，不应默认为一定能够同步。
 - 新增以 DO 无在线来源与传输故障分别断言的状态回归；全套云版 96/96、原 Node 42/42 已通过，部署前检查待继续。
+- **已发布**：Cloudflare Worker `8621aef7-ae1c-4518-8cb8-2dd8801a6a07`；`https://music.zjhstudio.com` 首页、Manifest、App、CSS、source-health.js、bridge.js 六项实际 HTTP 200，Manifest 为 **v3.3.11**；缓存破坏/在线音源暂缺/传输失败的判定文案已上线。构建/敏感信息检测/Wrangler dry-run、云版96/96及旧Node42/42全部通过。
+- GitHub 使用已连接的 Git 对象接口逐项对照十个修改文件的 blob SHA，远端完整 tree 与本地 `1abaf5e333a303c1150ea15030499d280b38f495` 完全一致，fork 分支已推送 `669cc1c6e0d5f8fa3799d018bccf531b88ad50f8`；原本本地提交已备份到 `backup/v3.3.11-local-before-api-sync-20261124`，本地分支干净并与 fork 对齐。PR标题仍因上游权限403未能更改。
 
 ## 2026-11-24 · v3.3.10 歌单管理、多端 GM、移动惯性（已发布）
 
