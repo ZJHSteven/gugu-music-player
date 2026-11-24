@@ -25,6 +25,7 @@ import {
 import { inspectRoomMetadata, estimatePointerRoomBytes } from "./metadata-inspection.js";
 import { RelayClient } from "./relay-client.js";
 import { MAX_AUDIO_SIZE } from "./wire.js";
+import { validatePlaylist, verifyCachedAudio } from "./source-health.js";
 
 const EMPTY_UPDATE = { current: "云端版", latest: "", hasUpdate: false, autoUpdate: false, ready: false };
 const toHex = (bytes) => [...bytes].map((x) => x.toString(16).padStart(2, "0")).join("");
@@ -54,6 +55,12 @@ export class CloudBridge {
     this.relay = null;
     this.listeners = new Set();
     this.fileListeners = new Set();
+    this.healthListeners = new Set();
+    this.audioHealth = {
+      checking: false, localMissing: [], corrupt: [], unavailable: [],
+      remoteMissing: [], metadataError: "", transferError: "",
+    };
+    this.lastMissingBroadcast = new Map();
     this.writeChain = Promise.resolve();
     // GM 与玩家设备本地系统时钟可能不同，不能直接拿绝对 Date.now() 作跨端播放位置。
     // 通过 Owlbear Broadcast 单次 NTP 类时钟往返校准，完全不经过 Cloudflare DO。
@@ -105,6 +112,7 @@ export class CloudBridge {
         .then(() => { this.lastReadHadMusic = Boolean(this.state); })
         .catch((error) => {
           this.metadataReadFailures++;
+          this.reportMetadataError(error);
           console.warn("[gugu-cloud] 读取房间歌单失败", error);
         });
     });
@@ -117,6 +125,15 @@ export class CloudBridge {
     });
     this.OBR.broadcast.onMessage(BROADCAST_CHANNEL, (event) => {
       const data = event.data;
+      // 仅当歌单确有对应音频时才展示房间故障信息。广播只作提示，
+      // 不允许远端成员借此更改 Metadata、权限或播放时间轴。
+      if ((data?.t === "audio-unavailable" || data?.t === "audio-available") &&
+          this.state?.playlist?.some((track) => track.hash === data.hash)) {
+        const remote = new Set(this.audioHealth.remoteMissing);
+        if (data.t === "audio-unavailable") remote.add(data.hash);
+        else remote.delete(data.hash);
+        this.updateHealth({ remoteMissing: [...remote] });
+      }
       if (data?.t === "changed" && data.rev > (this.state?.rev || 0)) {
         this.refresh().catch(console.warn);
       }
@@ -148,6 +165,7 @@ export class CloudBridge {
     });
     try { await this.refresh(); }
     catch (error) {
+      this.reportMetadataError(error);
       // 一次性getMetadata失败不应阻止有限重试、也不应伪称空歌单。
       console.warn("[gugu-cloud] 初次读取房间状态失败，后续补偿重读", error);
     }
@@ -219,6 +237,66 @@ export class CloudBridge {
     return () => this.fileListeners.delete(listener);
   }
 
+  onHealth(listener) {
+    this.healthListeners.add(listener);
+    listener({ ...this.audioHealth });
+    return () => this.healthListeners.delete(listener);
+  }
+
+  updateHealth(patch) {
+    this.audioHealth = { ...this.audioHealth, ...patch };
+    for (const listener of this.healthListeners) {
+      try { listener({ ...this.audioHealth }); } catch (error) { console.warn(error); }
+    }
+  }
+
+  reportMetadataError(error) {
+    this.updateHealth({ metadataError: `房间歌单校验失败：${error?.message || "未知错误"}` });
+  }
+
+  // 本机缺失和全房间暂无在线音源是两种不同的状态。
+  // 广播仅提醒房主排查，绝不删歌或阻断正常歌曲播放。
+  onAudioAvailability(event) {
+    if (event.type === "local-audit") {
+      this.updateHealth({ checking: false, localMissing: event.missing,
+        corrupt: event.invalid });
+      return;
+    }
+    const hash = event.hash;
+    if (!this.state?.playlist.some((t) => t.hash === hash)) return;
+    if (event.type === "unavailable" || event.type === "transfer-error") {
+      this.updateHealth({ unavailable: [...new Set([...this.audioHealth.unavailable, hash])] });
+      if (event.type === "transfer-error") {
+        this.updateHealth({ transferError: "音频多次传输失败，已提醒房主检查原文件或网络连接" });
+      }
+      const now = Date.now();
+      if (now - (this.lastMissingBroadcast.get(hash) || 0) > 60_000) {
+        this.lastMissingBroadcast.set(hash, now);
+        this.OBR.broadcast.sendMessage(BROADCAST_CHANNEL,
+          { t: "audio-unavailable", hash }).catch(console.warn);
+      }
+    } else if (event.type === "source-found" || event.type === "available") {
+      const wasMissing = this.audioHealth.unavailable.includes(hash) ||
+        this.audioHealth.remoteMissing.includes(hash);
+      const remaining = this.audioHealth.unavailable.filter((x) => x !== hash);
+      const change = { unavailable: remaining,
+        remoteMissing: this.audioHealth.remoteMissing.filter((x) => x !== hash) };
+      if (event.type === "available") {
+        change.localMissing = this.audioHealth.localMissing.filter((x) => x !== hash);
+        change.corrupt = this.audioHealth.corrupt.filter((x) => x.hash !== hash);
+        if (!remaining.length) change.transferError = "";
+        this.OBR.broadcast.sendMessage(BROADCAST_CHANNEL,
+          { t: "audio-available", hash }).catch(console.warn);
+      } else if (wasMissing) {
+        // 新上线的来源已经向 DO 登记，旧「缺失」告警应同步消失，
+        // 而不能持续挂在 GM 面板上直到所有人重新打开房间。
+        this.OBR.broadcast.sendMessage(BROADCAST_CHANNEL,
+          { t: "audio-available", hash }).catch(console.warn);
+      }
+      this.updateHealth(change);
+    }
+  }
+
   emit() {
     if (!this.state) return;
     for (const callback of this.listeners) {
@@ -228,10 +306,19 @@ export class CloudBridge {
 
   async receiveState(state) {
     if (!state) return;
+    try { validatePlaylist(state); }
+    catch (error) { this.reportMetadataError(error); throw error; }
     const different = !this.state || this.state.secret !== state.secret;
     if (!different && this.state.rev > state.rev) return;
     const oldClockId = this.state?.playback?.clockId || "";
     this.state = state;
+    const validHashes = new Set(state.playlist.map((t) => t.hash));
+    this.updateHealth({
+      metadataError: "", checking: true,
+      localMissing: this.audioHealth.localMissing.filter((hash) => validHashes.has(hash)),
+      unavailable: this.audioHealth.unavailable.filter((hash) => validHashes.has(hash)),
+      remoteMissing: this.audioHealth.remoteMissing.filter((hash) => validHashes.has(hash)),
+    });
     const clockId = state.playback?.clockId || "";
     if (clockId !== oldClockId && clockId !== this.deviceId) {
       // 时钟源改变：舍弃旧源的偏移，主动对新源发起指定设备校准。
@@ -248,14 +335,21 @@ export class CloudBridge {
       this.relay = new RelayClient(
         this.roomId, state.secret,
         (hash) => this.fileListeners.forEach((listener) => listener(hash)),
-        (error) => console.warn("[gugu-cloud] 文件中继错误", error)
+        (error) => {
+          console.warn("[gugu-cloud] 文件中继错误", error);
+          this.updateHealth({ transferError: "音频传输失败，请检查连接或由房主补传原文件" });
+        },
+        (event) => this.onAudioAvailability(event)
       );
       this.relay.connect();
     }
     // 很晚才进入房间的玩家可能已经错过数轮自然切歌。
     // 必须优先请求“此刻预测的歌曲”，而不是历史播放指令里最初的 trackId。
     const activeTrack = this.getNow()?.playback?.trackId || state.playback?.trackId;
-    this.relay?.updateTracks(state.playlist, activeTrack).catch(console.warn);
+    this.relay?.updateTracks(state.playlist, activeTrack).catch((error) => {
+      this.updateHealth({ checking: false,
+        transferError: `本地音频校验失败：${error.message}` });
+    });
     this.emit();
   }
 
@@ -282,6 +376,9 @@ export class CloudBridge {
       return;
     }
     const state = normalizeState(value);
+    if (value !== undefined && value !== null && !state) {
+      throw new Error("房间音乐元数据格式或版本不正确，请恢复完整歌单备份");
+    }
     if (state) this.snapshotPointer = null;
     await this.receiveState(state);
   }
@@ -295,6 +392,7 @@ export class CloudBridge {
       this.lastReadHadMusic = Boolean(this.state);
     } catch (error) {
       this.metadataReadFailures++;
+      this.reportMetadataError(error);
       throw error;
     }
   }
@@ -463,45 +561,97 @@ export class CloudBridge {
     return result;
   }
 
+  /** 已在 Metadata 中登记的曲目，仅补回与其 SHA256 完全一致的原文件。
+   * 不添加重复曲目、不修改标题、播放序列或时间锚点。
+   */
+  async repairTrack(trackId, file) {
+    if (!await this.isGM()) throw new Error("只有房主能补传歌曲原文件");
+    await this.refresh();
+    const track = this.state?.playlist.find((item) => item.id === trackId);
+    if (!track) throw new Error("待补传的歌曲已不在房间歌单");
+    if (!file?.size || file.size !== track.size || file.size > MAX_AUDIO_SIZE) {
+      throw new Error(`《${track.title}》文件大小不匹配，必须选择原始音频文件`);
+    }
+    if ((await digest(file)) !== track.hash) {
+      throw new Error(`《${track.title}》文件内容 SHA-256 不匹配，未覆盖原歌曲`);
+    }
+    const savedTo = await putAudio(track.hash, file);
+    await requestPersistence();
+    await this.relay?.announce(track.hash);
+    return { title: track.title, savedTo };
+  }
+
   /** GM 手动保存真正可离线恢复的 ZIP，不依赖浏览器缓存或 Cloudflare 存歌。 */
   async exportBackup() {
     if (!await this.isGM()) throw new Error("只有 Owlbear 房主可以导出歌单备份");
     await this.refresh();
     const available = new Map();
+    const missing = [];
     for (const track of this.state.playlist) {
       if (available.has(track.hash)) continue;
-      const audio = await getAudio(track.hash);
-      if (!audio) throw new Error(`本机缺少《${track.title}》，请等缓存下载完整再备份`);
-      if ((await digest(audio)) !== track.hash) {
-        throw new Error(`《${track.title}》的本地缓存校验失败`);
+      const result = await verifyCachedAudio(track, getAudio, digest);
+      if (!result.valid) {
+        missing.push(track.title);
+        continue;
       }
-      available.set(track.hash, audio);
+      available.set(track.hash, await getAudio(track.hash));
     }
+    if (missing.length) throw new Error(`有 ${missing.length} 首歌曲缺少完整原文件：${missing.slice(0, 5).join("、")}。请补传或等待其他成员同步后再生成完整 ZIP`);
     return createBackupArchive(this.state.playlist, available);
   }
 
   /** 从用户主动选择的本地 ZIP 恢复音频与缺失的歌单项，不覆盖其他歌曲。 */
   async importBackup(file) {
     if (!await this.isGM()) throw new Error("只有 Owlbear 房主可以恢复歌单备份");
-    const archive = await readBackupArchive(file);
-    const unique = [...new Set(archive.tracks.map((t) => t.hash))];
+    // ZIP 中少数原文件缺失时，只恢复其余完整音频；版本不兼容、
+    // ZIP 结构/CRC 损坏仍会在任何 OPFS 写入前直接拒绝。
+    const archive = await readBackupArchive(file, { allowPartial: true });
+    await this.refresh();
+    if (!this.state) await this.ensureRoomState();
+    const existing = this.state.playlist;
+    const mismatched = archive.tracks.filter((track) =>
+      !existing.some((item) => item.hash === track.hash) &&
+      existing.some((item) => item.title === track.title && item.hash !== track.hash)
+    );
+    const missingFromZip = archive.missing || [];
+    const incomplete = new Set(missingFromZip.map((t) => t.hash));
+    const accepted = archive.tracks.filter((track) =>
+      !mismatched.includes(track) && !incomplete.has(track.hash));
+    const unique = [...new Set(accepted.map((t) => t.hash))];
     // 先完整核验再写入本地存储；恶意 ZIP 不能向 OPFS 写入任意文件名。
     for (const hash of unique) {
       if ((await digest(archive.files.get(`audio/${hash}`))) !== hash) {
         throw new Error(`备份音频 SHA-256 不一致：${hash.slice(0, 12)}`);
       }
     }
+    let restored = 0;
+    let alreadyPresent = 0;
+    let memoryOnly = 0;
+    const failed = [];
+    const failedHashes = new Set();
     for (const hash of unique) {
-      await putAudio(hash, archive.files.get(`audio/${hash}`));
-      await this.relay?.announce(hash);
+      const track = accepted.find((t) => t.hash === hash);
+      try {
+        const present = await verifyCachedAudio(track, getAudio, digest);
+        if (present.valid) { alreadyPresent++; continue; }
+        const savedTo = await putAudio(hash, archive.files.get(`audio/${hash}`));
+        if (savedTo === "memory") memoryOnly++;
+        restored++;
+        await this.relay?.announce(hash);
+      } catch (error) {
+        failedHashes.add(hash);
+        failed.push({ title: track.title, reason: String(error.message || error).slice(0, 120) });
+      }
     }
     await requestPersistence();
     let added = 0;
     await this.change((state) => {
       let next = state;
-      for (const track of archive.tracks) {
-        if (next.playlist.some((item) =>
-          item.hash === track.hash && item.title === track.title)) continue;
+      for (const track of accepted.filter((t) => !failedHashes.has(t.hash))) {
+        // 用户可能曾经手动更名，只要音频哈希一致就属于同一曲，
+        // 不能因 ZIP 里的旧标题不同而重复添加歌曲。
+        if (next.playlist.some((item) => item.hash === track.hash)) continue;
+        if (next.playlist.some((item) => item.title === track.title)) continue;
         const folder = String(track.folder || "").slice(0, 24);
         if (folder && !next.folders.includes(folder)) {
           next = { ...next, folders: [...next.folders, folder], rev: next.rev + 1 };
@@ -515,7 +665,16 @@ export class CloudBridge {
       assertCloudStateSize(next);
       return next;
     });
-    return { restored: unique.length, added };
+    const stillMissing = [];
+    for (const track of this.state.playlist) {
+      if (!(await verifyCachedAudio(track, getAudio, digest)).valid) {
+        stillMissing.push(track.title);
+      }
+    }
+    return { restored, alreadyPresent, added, memoryOnly,
+      mismatched: mismatched.map((t) => t.title),
+      missingFromZip: missingFromZip.map((t) => t.title),
+      failed, stillMissing };
   }
 }
 

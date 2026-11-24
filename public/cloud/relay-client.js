@@ -14,17 +14,23 @@ import { CHUNK_SIZE, MAX_AUDIO_SIZE, HASH_RE, decodeChunk, encodeChunk } from ".
 import { getAudio, putAudio, digest } from "./storage.js";
 import { prioritizeTracks } from "./request-priority.js";
 import { sendAudioWithoutAck, sendAudioWithAck } from "./audio-sender.js";
+import { verifyCachedAudio } from "./source-health.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const MAX_SIMULTANEOUS_DOWNLOADS = 2;
+// 新入房间的来源设备可能尚未发完 have 通知，短暂 unavailable
+// 不能立刻广播为全房间缺失。延迟确认，不会唤醒休眠的 DO。
+const UNAVAILABLE_GRACE_MS = 2500;
 // 用户主动诊断时使用的保留哈希，不对应任何真实音频。
 const PROBE_HASH = "0".repeat(64);
 
 export class RelayClient {
-  constructor(roomId, secret, onFile = () => {}, onError = () => {}) {
+  constructor(roomId, secret, onFile = () => {}, onError = () => {},
+              onAvailability = () => {}) {
     this.roomId = roomId;
     this.secret = secret;
     this.onFile = onFile;
+    this.onAvailability = onAvailability;
     // 只在当前页面内保存最近的诊断事件，不把浏览器错误自动上传到云端。
     // 导出的报告只包含固定类型、数量、时间与歌曲摘要前 10 位。
     this.events = [];
@@ -42,11 +48,17 @@ export class RelayClient {
       onError(error);
     };
     this.tracks = [];
+    // 收到房间 Metadata 时立即保存待同步的歌单。
+    // WebSocket onopen 可在异步 OPFS 扫描尚未结束时触发；
+    // 如果用 this.tracks（上一次扫描结果）重新扫描，会把首次歌单清空。
+    this.desiredTracks = [];
     this.ws = null;
     this.owned = new Set();
     this.requested = new Set();
     this.incoming = new Map();
     this.transferTimeouts = new Map();
+    this.transferFailures = new Map();
+    this.unavailableTimers = new Map();
     this.peer = null;
     this.lastAck = new Map();
     this.ackWaiters = new Map();
@@ -163,20 +175,26 @@ export class RelayClient {
   async updateTracks(tracks, currentTrackId = this.priorityTrackId) {
     const generation = ++this.updateGeneration;
     this.priorityTrackId = currentTrackId;
+    this.desiredTracks = [...(tracks || [])];
     const ordered = prioritizeTracks(
-      (tracks || []).filter((t) => HASH_RE.test(t.hash)), currentTrackId
+      this.desiredTracks.filter((t) => HASH_RE.test(t.hash)), currentTrackId
     );
     const owned = new Set();
+    const missing = new Map();
     for (const t of ordered) {
-      if (await getAudio(t.hash)) owned.add(t.hash);
+      if (owned.has(t.hash) || missing.has(t.hash)) continue;
+      const result = await verifyCachedAudio(t, getAudio, digest);
+      if (result.valid) owned.add(t.hash);
+      else missing.set(t.hash, result.reason);
     }
     // 多次 onMetadataChange 可能并行扫描 OPFS。过期异步结果绝不可
     // 把刚加入歌单的歌曲、目前优先的歌曲顺序覆盖回旧状态。
     if (this.stopped || generation !== this.updateGeneration) return;
     this.tracks = ordered;
-    this.owned = new Set([
-      ...owned, ...[...this.owned].filter((hash) => ordered.some((t) => t.hash === hash)),
-    ]);
+    this.owned = owned;
+    this.onAvailability({ type: "local-audit", missing: [...missing.keys()],
+      invalid: [...missing.entries()].filter(([, reason]) => reason !== "missing")
+        .map(([hash, reason]) => ({ hash, reason })) });
     const active = new Set(ordered.map((t) => t.hash));
     for (const hash of [...this.requested]) {
       if (!active.has(hash)) {
@@ -185,12 +203,16 @@ export class RelayClient {
         this.clearTransferTimeout(hash);
       }
     }
+    for (const hash of [...this.unavailableTimers.keys()]) {
+      if (!active.has(hash)) this.clearUnavailableTimer(hash);
+    }
     // 曲目状态更新时若文件早已由兄弟 iframe 保存，则清除仍在等待的
     // 请求和 30 秒重试定时器，避免本地已有文件仍反复唤醒 DO。
     for (const hash of owned) {
       this.requested.delete(hash);
       this.incoming.delete(hash);
       this.clearTransferTimeout(hash);
+      this.transferFailures.delete(hash);
     }
     this.send({ t: "have", hashes: [...this.owned] });
     this.pumpRequests();
@@ -234,6 +256,13 @@ export class RelayClient {
         this.metrics.timedOutPartialChunks += partial.chunks.filter(Boolean).length;
       }
       this.note("timeout", { hash: hash.slice(0, 10) });
+      const failures = (this.transferFailures.get(hash) || 0) + 1;
+      this.transferFailures.set(hash, failures);
+      // 第一次断流先静默重试；第二次仍失败才把问题上报给房主。
+      // 不中断其余歌曲，也不在 DO 端增加任何周期轮询。
+      if (failures === 2) {
+        this.onAvailability({ type: "transfer-error", hash, reason: "timeout" });
+      }
       // 可能刚好错过了其他 iframe 的广播。仅在本次重传前再查一次本地
       // OPFS/IDB；如果文件已有完整副本，就不需要再次向公网请求。
       try {
@@ -253,6 +282,11 @@ export class RelayClient {
   clearTransferTimeout(hash) {
     clearTimeout(this.transferTimeouts.get(hash));
     this.transferTimeouts.delete(hash);
+  }
+
+  clearUnavailableTimer(hash) {
+    clearTimeout(this.unavailableTimers.get(hash));
+    this.unavailableTimers.delete(hash);
   }
 
   /**
@@ -295,7 +329,8 @@ export class RelayClient {
       this.incoming.clear();
       for (const timeout of this.transferTimeouts.values()) clearTimeout(timeout);
       this.transferTimeouts.clear();
-      this.updateTracks(this.tracks, this.priorityTrackId).catch(this.onError);
+      // 必须用最后收到的完整 Metadata，而不是尚未完成异步检查的旧 tracks。
+      this.updateTracks(this.desiredTracks, this.priorityTrackId).catch(this.onError);
     };
     ws.onmessage = (e) => {
       if (typeof e.data === "string") {
@@ -325,6 +360,7 @@ export class RelayClient {
       this.cancelAcks();
       for (const timeout of this.transferTimeouts.values()) clearTimeout(timeout);
       this.transferTimeouts.clear();
+      for (const hash of this.unavailableTimers.keys()) this.clearUnavailableTimer(hash);
       if (this.stopped) return;
       const delay = this.reconnectDelay;
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
@@ -343,8 +379,11 @@ export class RelayClient {
     this.requested.delete(hash);
     this.incoming.delete(hash);
     this.clearTransferTimeout(hash);
+    this.transferFailures.delete(hash);
+    this.clearUnavailableTimer(hash);
     this.send({ t: "have", hashes: [...this.owned] });
     this.localBus?.postMessage({ t: "saved", hash });
+    this.onAvailability({ type: "available", hash });
     this.pumpRequests();
   }
 
@@ -358,12 +397,17 @@ export class RelayClient {
         !this.tracks.some((track) => track.hash === hash)) return;
     const file = await getAudio(hash);
     if (!file || this.stopped) return;
+    const meta = this.tracks.find((track) => track.hash === hash);
+    if (!meta || !(await verifyCachedAudio(meta, getAudio, digest)).valid) return;
     const firstSeen = !this.owned.has(hash);
     this.owned.add(hash);
     this.requested.delete(hash);
     this.incoming.delete(hash);
     this.clearTransferTimeout(hash);
+    this.transferFailures.delete(hash);
+    this.clearUnavailableTimer(hash);
     this.send({ t: "have", hashes: [...this.owned] });
+    this.onAvailability({ type: "available", hash });
     // 播放器先前可能因找不到本地曲目而停在缓冲，直接重新加载。
     if (firstSeen) this.onFile(hash);
     this.pumpRequests();
@@ -397,7 +441,11 @@ export class RelayClient {
       }
       case "available":
         for (const hash of msg.hashes || []) {
-          if (this.tracks.some((t) => t.hash === hash)) this.unavailable.delete(hash);
+          if (this.tracks.some((t) => t.hash === hash)) {
+            this.unavailable.delete(hash);
+            this.clearUnavailableTimer(hash);
+            this.onAvailability({ type: "source-found", hash });
+          }
         }
         this.pumpRequests();
         break;
@@ -410,6 +458,14 @@ export class RelayClient {
         this.requested.delete(msg.hash);
         this.clearTransferTimeout(msg.hash);
         this.unavailable.add(msg.hash);
+        this.clearUnavailableTimer(msg.hash);
+        this.unavailableTimers.set(msg.hash, setTimeout(() => {
+          this.unavailableTimers.delete(msg.hash);
+          if (!this.stopped && this.ws?.readyState === WebSocket.OPEN &&
+              this.unavailable.has(msg.hash) && !this.owned.has(msg.hash)) {
+            this.onAvailability({ type: "unavailable", hash: msg.hash });
+          }
+        }, UNAVAILABLE_GRACE_MS));
         this.pumpRequests();
         break;
       case "done":
@@ -533,6 +589,7 @@ export class RelayClient {
       this.owned.add(header.hash);
       this.requested.delete(header.hash);
       this.clearTransferTimeout(header.hash);
+      this.transferFailures.delete(header.hash);
       await this.announce(header.hash);
       phase = "notification";
       // DO 可区分“服务器转发了字节”和“接收端校验并保存成功”。
@@ -553,6 +610,7 @@ export class RelayClient {
       });
       this.requested.delete(header.hash);
       this.clearTransferTimeout(header.hash);
+      this.onAvailability({ type: "transfer-error", hash: header.hash, reason: phase });
       this.onError(err);
     } finally {
       this.incoming.delete(header.hash);
@@ -567,6 +625,7 @@ export class RelayClient {
     this.cancelAcks();
     for (const timeout of this.transferTimeouts.values()) clearTimeout(timeout);
     this.transferTimeouts.clear();
+    for (const hash of this.unavailableTimers.keys()) this.clearUnavailableTimer(hash);
     this.ws?.close();
     this.ws = null;
   }

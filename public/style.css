@@ -145,6 +145,9 @@ html.cloud-mode .diag-jump { display: inline-flex; }
 .icon-btn svg { width: 14px; height: 14px; }
 .rename-btn { font-size: 19px; line-height: 1; }
 .rename-btn:hover { color: var(--gold); background: var(--gold-soft); }
+.tag.missing-file { background: rgba(224,108,117,0.17); border-color: var(--red); color: #ff939e; border-radius: 999px; padding: 1px 6px; font-weight: 600; }
+.repair-btn { color: var(--red); }
+.row-sub { flex-wrap: wrap; }
 .rename-editor { display: flex; align-items: center; gap: 6px; padding: 2px 8px 10px 34px; }
 .rename-editor .input { flex: 1; min-width: 0; }
 .rename-editor .btn { padding: 0 9px; }

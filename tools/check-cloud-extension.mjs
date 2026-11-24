@@ -23,6 +23,26 @@ const owlOrigin = "https://www.owlbear.rodeo";
 const read = (file) => fs.readFile(path.join(dir, file));
 if (origin.protocol !== "https:") throw new Error("正式安装入口必须使用 HTTPS");
 
+async function listFiles(root, folder = root) {
+  const files = [];
+  for (const entry of await fs.readdir(folder, { withFileTypes: true })) {
+    const target = path.join(folder, entry.name);
+    if (entry.isDirectory()) files.push(...await listFiles(root, target));
+    else if (entry.isFile()) files.push(path.relative(root, target).replaceAll("\\", "/"));
+  }
+  return files;
+}
+const expectedAssets = new Set([
+  ...await listFiles(path.join(repo, "public")), "_headers", "config.js",
+]);
+const publishedAssets = await listFiles(dir);
+const unexpectedAssets = publishedAssets.filter((file) => !expectedAssets.has(file));
+const missingAssets = [...expectedAssets].filter((file) => !publishedAssets.includes(file));
+if (unexpectedAssets.length || missingAssets.length) {
+  throw new Error(`构建产物与 public/ 不一致：残留 ${unexpectedAssets.join(", ") || "无"}；缺失 ${missingAssets.join(", ") || "无"}`);
+}
+console.log(`✓ 静态资源精确同步：${publishedAssets.length} 个文件，无已删除模块残留`);
+
 const manifest = JSON.parse((await read("manifest.json")).toString("utf8"));
 if (manifest.manifest_version !== 1 || !manifest.name ||
     !/^\d+\.\d+\.\d+$/.test(manifest.version || "")) {

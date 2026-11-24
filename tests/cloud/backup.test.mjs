@@ -35,3 +35,34 @@ test("备份不完整和 ZIP 内容损坏必须拒绝恢复", async () => {
   damaged[localHeaderBytes + 4] ^= 0x20;
   await assert.rejects(readBackupArchive(new Blob([damaged])), /校验失败/);
 });
+
+test("ZIP 缺少某首原文件时：严格模式拒绝，GM 部分恢复模式列出缺失曲目", async () => {
+  const a = Buffer.from("valid-track-a");
+  const b = Buffer.from("valid-track-b");
+  const ha = createHash("sha256").update(a).digest("hex");
+  const hb = createHash("sha256").update(b).digest("hex");
+  const zip = await createBackupArchive([
+    { title: "仍可恢复", hash: ha, size: a.length, duration: 1 },
+    { title: "ZIP 文件中缺失", hash: hb, size: b.length, duration: 1 },
+  ], new Map([[ha, new Blob([a])], [hb, new Blob([b])]]));
+  const original = new Uint8Array(await zip.arrayBuffer());
+  const view = new DataView(original.buffer);
+  let pos = 0, removeFrom = -1, removeTo = -1;
+  while (pos + 30 < original.byteLength && view.getUint32(pos, true) === 0x04034b50) {
+    const size = view.getUint32(pos + 18, true);
+    const filenameLength = view.getUint16(pos + 26, true);
+    const extraLength = view.getUint16(pos + 28, true);
+    const name = new TextDecoder().decode(original.slice(pos + 30, pos + 30 + filenameLength));
+    const end = pos + 30 + filenameLength + extraLength + size;
+    if (name === `audio/${hb}`) { removeFrom = pos; removeTo = end; break; }
+    pos = end;
+  }
+  assert.ok(removeFrom > 0 && removeTo > removeFrom);
+  const partial = new Blob([original.slice(0, removeFrom), original.slice(removeTo)]);
+  await assert.rejects(readBackupArchive(partial), /缺失/);
+  const recovered = await readBackupArchive(partial, { allowPartial: true });
+  assert.equal(recovered.tracks.length, 2);
+  assert.deepEqual(recovered.missing, [{ title: "ZIP 文件中缺失", hash: hb }]);
+  assert.deepEqual(Buffer.from(await recovered.files.get(`audio/${ha}`).arrayBuffer()), a);
+  assert.equal(recovered.files.has(`audio/${hb}`), false);
+});

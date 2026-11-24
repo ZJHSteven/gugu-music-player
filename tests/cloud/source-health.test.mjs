@@ -1,0 +1,242 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createHash, webcrypto } from "node:crypto";
+import { Blob } from "node:buffer";
+import { CloudBridge } from "../../public/cloud/bridge.js";
+import { createBackupArchive } from "../../public/cloud/backup.js";
+import { createState, addTrack, applyCommand } from "../../public/cloud/state.js";
+import { validatePlaylist, verifyCachedAudio } from "../../public/cloud/source-health.js";
+import { RelayClient } from "../../public/cloud/relay-client.js";
+
+globalThis.crypto ??= webcrypto;
+globalThis.location = new URL("https://music.zjhstudio.com/");
+const sha = (b) => createHash("sha256").update(b).digest("hex");
+
+class FakeWebSocket {
+  static OPEN = 1;
+  static CONNECTING = 0;
+  constructor() {
+    this.readyState = 0;
+    this.sent = [];
+    setTimeout(() => {
+      if (this.readyState === 0) {
+        this.readyState = 1;
+        this.onopen?.();
+      }
+    }, 0);
+  }
+  send(data) { this.sent.push(data); }
+  close() { this.readyState = 3; this.onclose?.(); }
+}
+globalThis.WebSocket = FakeWebSocket;
+
+function makeBridge(state, role = "GM") {
+  const room = { data: { "com.zjhstudio.gugu-cloud/state": state }, changes: [] };
+  const messages = [];
+  const recipients = [];
+  const bridge = new CloudBridge({
+    room: {
+      getMetadata: async () => structuredClone(room.data),
+      setMetadata: async (patch) => {
+        Object.assign(room.data, structuredClone(patch));
+        for (const cb of room.changes) cb(structuredClone(room.data));
+      },
+      onMetadataChange: cb => room.changes.push(cb),
+    },
+    player: { getRole: async () => role, onChange: () => {} },
+    broadcast: {
+      onMessage: (_, callback) => recipients.push(callback),
+      sendMessage: async (_, data) => {
+        messages.push(data);
+        for (const callback of recipients) callback({ data });
+      },
+    },
+  }, "source-audit-test-room");
+  return { bridge, room, messages };
+}
+
+const cleanup = (bridge) => {
+  bridge.relay?.close();
+  clearInterval(bridge.clockMaintenance);
+};
+
+test("GM 启动时拒绝损坏的歌单结构，但缺少本地原文件不删除其他曲目", async () => {
+  let state = createState("a".repeat(32));
+  state = addTrack(state, { title: "可单独修复", hash: "b".repeat(64), size: 128 });
+  assert.equal(validatePlaylist(state), true);
+  const invalid = structuredClone(state);
+  invalid.playlist.push({ ...invalid.playlist[0] });
+  assert.throws(() => validatePlaylist(invalid), /歌单第 2 首/);
+  const invalidHash = structuredClone(state);
+  invalidHash.playlist[0].hash = "not-a-hash";
+  assert.throws(() => validatePlaylist(invalidHash), /元数据损坏/);
+
+  const { bridge } = makeBridge(state);
+  try {
+    await bridge.start();
+    await bridge.relay.updateTracks(state.playlist);
+    assert.deepEqual(bridge.audioHealth.localMissing, ["b".repeat(64)]);
+    assert.equal(bridge.state.playlist.length, 1);
+    assert.equal(bridge.state.playlist[0].title, "可单独修复");
+  } finally { cleanup(bridge); }
+});
+
+test("房间 Metadata 结构损坏会产生可见故障状态，不被误当成空歌单", async () => {
+  const state = createState("8".repeat(32));
+  state.playlist.push({ id: "broken", title: "broken", hash: "wrong", size: -12 });
+  const { bridge } = makeBridge(state);
+  try {
+    await bridge.start();
+    assert.equal(bridge.state, null);
+    assert.match(bridge.audioHealth.metadataError, /歌单.*校验失败/);
+    assert.match(bridge.audioHealth.metadataError, /第 1 首/);
+  } finally { cleanup(bridge); }
+});
+
+test("DO 暂时没有来源先等待：available 抵达能取消告警；确认缺失才通知 GM", async () => {
+  const hash = "a".repeat(64);
+  const events = [];
+  const relay = new RelayClient("room", "a".repeat(32),
+    () => {}, () => {}, event => events.push(event));
+  relay.tracks = [{ hash, size: 100, title: "待获取" }];
+  relay.ws = { readyState: FakeWebSocket.OPEN, send: () => {}, close: () => {} };
+  try {
+    relay.onControl(JSON.stringify({ t: "unavailable", hash }));
+    assert.equal(events.some((event) => event.type === "unavailable"), false);
+    relay.onControl(JSON.stringify({ t: "available", hashes: [hash] }));
+    assert.equal(relay.unavailableTimers.size, 0);
+    assert.equal(events.some((event) => event.type === "unavailable"), false);
+    relay.onControl(JSON.stringify({ t: "unavailable", hash }));
+    await new Promise((resolve) => setTimeout(resolve, 2600));
+    assert.equal(events.filter((event) => event.type === "unavailable").length, 1);
+  } finally { relay.close(); }
+});
+
+test("PLAYER 初次连接的 WebSocket onopen 不能覆盖未完成的歌单扫描，优先当前音轨", async () => {
+  const relay = new RelayClient("race-room", "b".repeat(32));
+  const tracks = [
+    { id: "old", title: "第一首", hash: "1".repeat(64), size: 200 },
+    { id: "current", title: "正在播放", hash: "2".repeat(64), size: 200 },
+    { id: "next", title: "下一首", hash: "3".repeat(64), size: 200 },
+  ];
+  try {
+    const initialScan = relay.updateTracks(tracks, "current");
+    assert.equal(relay.desiredTracks.length, 3, "待同步歌单须在 await OPFS 之前保存");
+    relay.connect();
+    // 人为让 onopen 在首次扫描尚未结束时执行：旧实现从 this.tracks
+    // （仍是空数组）重启扫描，最终 PLAYER 一首歌都不会请求。
+    relay.ws.readyState = FakeWebSocket.OPEN;
+    relay.ws.onopen();
+    await initialScan;
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    assert.equal(relay.tracks.length, 3);
+    assert.equal(relay.tracks[0].id, "current", "当前曲目必须优先");
+    assert.equal(relay.desiredTracks.length, 3);
+    assert.ok(relay.metrics.requested >= 1, "缺失音源时仍须实际发起获取请求");
+  } finally { relay.close(); }
+});
+
+test("来源缺失广播只提醒：不能改歌单；找到新来源会同步清除房主告警", async () => {
+  let state = createState("9".repeat(32));
+  state = addTrack(state, { title: "告警曲", hash: "7".repeat(64), size: 25 });
+  const { bridge, messages } = makeBridge(state);
+  try {
+    await bridge.start();
+    const before = structuredClone(bridge.state);
+    bridge.onAudioAvailability({ type: "unavailable", hash: state.playlist[0].hash });
+    assert.ok(messages.some((message) => message.t === "audio-unavailable"));
+    assert.deepEqual(bridge.state, before);
+    assert.deepEqual(bridge.audioHealth.remoteMissing, [state.playlist[0].hash]);
+    bridge.onAudioAvailability({ type: "source-found", hash: state.playlist[0].hash });
+    assert.deepEqual(bridge.audioHealth.remoteMissing, []);
+    assert.ok(messages.some((message) => message.t === "audio-available"));
+    assert.deepEqual(bridge.state, before);
+  } finally { cleanup(bridge); }
+});
+
+test("本机原文件分别验证字节长度和 SHA256，不把损坏的 OPFS 文件当音源", async () => {
+  const bytes = Buffer.from("valid audio source data");
+  const hash = sha(bytes);
+  const t = { hash, size: bytes.length };
+  const reader = async () => new Blob([bytes]);
+  const digest = async (b) => sha(Buffer.from(await b.arrayBuffer()));
+  assert.deepEqual(await verifyCachedAudio(t, reader, digest), { valid: true, reason: null });
+  assert.deepEqual(await verifyCachedAudio(t, async () => null, digest), { valid: false, reason: "missing" });
+  assert.deepEqual(await verifyCachedAudio(t, async () => new Blob(["short"]), digest),
+    { valid: false, reason: "size-mismatch" });
+  assert.deepEqual(await verifyCachedAudio(t, async () => new Blob(["x".repeat(bytes.length)]), digest),
+    { valid: false, reason: "hash-mismatch" });
+});
+
+test("重命名只改 Metadata，不改变音频哈希、播放序号和原有时间锚点", async () => {
+  let state = createState("c".repeat(32));
+  state = addTrack(state, { title: "原名", hash: "d".repeat(64), size: 123, duration: 30 });
+  state = applyCommand(state, { type: "select", trackId: state.playlist[0].id });
+  const original = structuredClone(state.playback);
+  const { bridge } = makeBridge(state);
+  try {
+    await bridge.start();
+    await bridge.apiPost("/api/rooms/test/command", {
+      type: "track.update", trackId: state.playlist[0].id, patch: { title: "  新歌名  " },
+    });
+    assert.equal(bridge.state.playlist[0].title, "新歌名");
+    assert.equal(bridge.state.playlist[0].hash, state.playlist[0].hash);
+    assert.deepEqual(bridge.state.playback, original);
+    assert.throws(() => applyCommand(bridge.state, {
+      type: "track.update", trackId: state.playlist[0].id, patch: { title: "   " },
+    }), /不能为空/);
+  } finally { cleanup(bridge); }
+});
+
+test("单曲补传必须匹配原始哈希，不增加重复歌单项目且不能阻断其他歌曲", async () => {
+  const bytes = Buffer.from("this is one full original audio");
+  const hash = sha(bytes);
+  let state = createState("e".repeat(32));
+  state = addTrack(state, { title: "缺失的音轨", hash, size: bytes.length });
+  state = addTrack(state, { title: "另一首", hash: "f".repeat(64), size: 222 });
+  const { bridge, messages } = makeBridge(state);
+  try {
+    await bridge.start();
+    await bridge.relay.updateTracks(state.playlist);
+    const before = structuredClone(bridge.state);
+    await assert.rejects(() => bridge.repairTrack(state.playlist[0].id,
+      new Blob([Buffer.from("x".repeat(bytes.length))])), /SHA-256 不匹配/);
+    assert.equal(bridge.state.playlist.length, 2);
+    const repaired = await bridge.repairTrack(state.playlist[0].id, new Blob([bytes]));
+    assert.ok(["opfs", "indexeddb", "memory"].includes(repaired.savedTo));
+    assert.equal(bridge.state.rev, before.rev, "单曲补传不得意外修改歌单 Revision");
+    assert.deepEqual(bridge.state.playback, before.playback);
+    assert.equal(bridge.audioHealth.localMissing.includes(hash), false);
+    assert.equal(bridge.audioHealth.localMissing.includes("f".repeat(64)), true);
+    assert.ok(messages.some((msg) => msg.t === "audio-available" && msg.hash === hash));
+  } finally { cleanup(bridge); }
+});
+
+test("ZIP 恢复按哈希补原文件：旧标题不重复加歌；同名不同哈希报告不匹配", async () => {
+  const a = Buffer.from("zip-matched-original-song");
+  const c = Buffer.from("zip-new-song");
+  const d = Buffer.from("zip-conflict-different-audio");
+  const ha = sha(a), hc = sha(c), hd = sha(d);
+  let state = createState("3".repeat(32));
+  state = addTrack(state, { title: "已手动更名", hash: ha, size: a.length });
+  state = addTrack(state, { title: "冲突曲名", hash: "4".repeat(64), size: 111 });
+  const zip = await createBackupArchive([
+    { title: "备份里的旧名", hash: ha, size: a.length, duration: 1 },
+    { title: "新曲目", hash: hc, size: c.length, duration: 2 },
+    { title: "冲突曲名", hash: hd, size: d.length, duration: 3 },
+  ], new Map([
+    [ha, new Blob([a])], [hc, new Blob([c])], [hd, new Blob([d])],
+  ]));
+  const { bridge } = makeBridge(state);
+  try {
+    await bridge.start();
+    const result = await bridge.importBackup(zip);
+    assert.equal(result.restored, 2);
+    assert.equal(result.added, 1);
+    assert.deepEqual(result.mismatched, ["冲突曲名"]);
+    assert.deepEqual(result.stillMissing, ["冲突曲名"]);
+    assert.equal(bridge.state.playlist.length, 3);
+    assert.equal(bridge.state.playlist[0].title, "已手动更名");
+    assert.equal(bridge.state.playlist.filter((t) => t.hash === ha).length, 1);
+  } finally { cleanup(bridge); }
+});

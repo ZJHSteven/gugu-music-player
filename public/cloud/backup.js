@@ -120,7 +120,7 @@ export async function createBackupArchive(tracks, fileByHash) {
   return new Blob(parts, { type: "application/zip" });
 }
 
-export async function readBackupArchive(file) {
+export async function readBackupArchive(file, { allowPartial = false } = {}) {
   if (!(file instanceof Blob) || !file.size || file.size > MAX_BACKUP_BYTES + 1024 * 1024) {
     throw new Error("无效备份或备份文件超出 256 MiB 上限");
   }
@@ -166,12 +166,21 @@ export async function readBackupArchive(file) {
   catch { throw new Error("备份歌单清单无法解析"); }
   if (manifest.format !== FORMAT || !Array.isArray(manifest.tracks) ||
       manifest.tracks.length > MAX_TRACKS) throw new Error("不是受支持的咕咕点歌台备份");
+  const missing = [];
   for (const track of manifest.tracks) {
     const body = files.get(filenameFor(track.hash));
-    if (!body || body.size !== track.size || !body.size ||
-        !Number.isFinite(track.duration) || track.duration < 0) {
+    if (!Number.isFinite(track.duration) || track.duration < 0 ||
+        !Number.isSafeInteger(track.size) || track.size <= 0 ||
+        track.size > MAX_AUDIO_BYTES || typeof track.title !== "string" ||
+        !track.title.trim()) {
       throw new Error(`备份音频缺失或元数据损坏：${String(track.title).slice(0, 60)}`);
     }
+    if (!body || body.size !== track.size) {
+      if (!allowPartial) {
+        throw new Error(`备份音频缺失或元数据损坏：${track.title.slice(0, 60)}`);
+      }
+      missing.push({ hash: track.hash, title: track.title.slice(0, 120) });
+    }
   }
-  return { tracks: manifest.tracks, files };
+  return { tracks: manifest.tracks, files, missing };
 }

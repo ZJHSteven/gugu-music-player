@@ -48,6 +48,10 @@ const S = {
   uploading: null,
   backupUrl: "",
   backupName: "",
+  audioHealth: null,
+  repairId: "",
+  restoreReport: "",
+  restoreReportKind: "",
   notice: null,
   claimError: "",
   biliUrl: "",
@@ -152,6 +156,8 @@ function render(force) {
       folders: (S.state?.folders || []).join("|"),
       fmap: (S.state?.playlist || []).map((t) => t.folder || "").join("|"),
       renamingId: S.renaming?.id || "",
+      audioHealth: S.audioHealth ? JSON.stringify(S.audioHealth) : "",
+      restoreReport: S.restoreReport,
       playerSettingsOpen: S.playerSettingsOpen,
       diagnosticsOpen: S.diagnosticsOpen,
       diagnosticsBusy: S.diagnosticsBusy,
@@ -304,14 +310,33 @@ async function copyDiagnostics() {
 }
 
 function noticeHtml() {
+  const health = S.audioHealth;
+  const problems = [];
+  if (health?.metadataError) problems.push(health.metadataError);
+  if (health?.transferError) problems.push(health.transferError);
+  if (S.role === "GM" && health?.localMissing?.length) {
+    const count = (S.state?.playlist || []).filter((track) =>
+      health.localMissing.includes(track.hash)).length;
+    problems.push(`本机有 ${count} 首歌曲缺少有效原文件，请在歌单中逐首补传；其他歌曲仍可正常播放。`);
+  }
+  if (S.role === "GM" && health?.remoteMissing?.length) {
+    problems.push(`有房间成员报告 ${health.remoteMissing.length} 首歌曲当前无法找到在线音源，请检查并补传。`);
+  }
+  if (S.role !== "GM" && S.now?.track?.hash &&
+      health?.unavailable?.includes(S.now.track.hash)) {
+    problems.push("当前歌曲暂无在线原文件，已通知房主；其他歌曲不受影响。");
+  }
+  const persistent = problems.length
+    ? `<div class="notice err">${icon("alert")}<span>${esc(problems.join(" "))}</span></div>`
+    : "";
   if (S.notice) {
-    return `<div class="notice ${S.notice.kind || ""}">${S.notice.kind === "err" ? icon("alert") : ""}<span>${esc(
+    return persistent + `<div class="notice ${S.notice.kind || ""}">${S.notice.kind === "err" ? icon("alert") : ""}<span>${esc(
       S.notice.text
     )}</span><button class="x" data-act="dismiss">×</button></div>`;
   }
-  if (S.role === "GM" && S.claimError) return `<div class="notice err">${icon("alert")}<span>${esc(S.claimError)}</span></div>`;
-  if (S.status.error) return `<div class="notice err">${icon("alert")}<span>${esc(S.status.error)}</span></div>`;
-  return "";
+  if (S.role === "GM" && S.claimError) return persistent + `<div class="notice err">${icon("alert")}<span>${esc(S.claimError)}</span></div>`;
+  if (S.status.error) return persistent + `<div class="notice err">${icon("alert")}<span>${esc(S.status.error)}</span></div>`;
+  return persistent;
 }
 
 function nowCard(seekable) {
@@ -459,14 +484,17 @@ function listView(list) {
   const shown = tab === "__all" ? list : list.filter((t) => (t.folder || "") === target);
 
   const bar = folderBar();
+  const auditing = window.BARD_CLOUD && S.audioHealth?.checking
+    ? '<div class="notice"><span>正在逐首核对本机的音频原文件…</span></div>' : "";
   if (!list.length) {
-    return `${bar}<div class="empty">${icon("music")}<div>还没有曲目</div><div>${window.BARD_CLOUD ? "切到「添加」，上传本地音频文件" : "切到「添加」，放本地文件或粘贴 B 站链接"}</div></div>`;
+    return `${bar}${auditing}<div class="empty">${icon("music")}<div>还没有曲目</div><div>${window.BARD_CLOUD ? "切到「添加」，上传本地音频文件" : "切到「添加」，放本地文件或粘贴 B 站链接"}</div></div>`;
   }
   if (!shown.length) {
-    return `${bar}<div class="empty">${icon("music")}<div>这个分类还是空的</div><div>切到「添加」上传，曲目会进到当前分类</div></div>`;
+    return `${bar}${auditing}<div class="empty">${icon("music")}<div>这个分类还是空的</div><div>切到「添加」上传，曲目会进到当前分类</div></div>`;
   }
 
   const cur = S.now?.playback?.trackId;
+  const missing = new Set(S.audioHealth?.localMissing || []);
   const rows = shown
     .map((t, i) => {
       const on = t.id === cur;
@@ -482,11 +510,13 @@ function listView(list) {
             .join("")}<button class="chip chip-add" data-act="folder-new">＋</button></div>`
         : "";
 
-      return `<div class="row ${on ? "playing" : ""}">
+      const absent = window.BARD_CLOUD && missing.has(t.hash);
+      return `<div class="row ${on ? "playing" : ""}" data-repair-id="${esc(t.id)}">
       <span class="idx">${on ? "▶" : i + 1}</span>
       <div class="row-main" data-act="pick" data-id="${esc(t.id)}">
         <div class="row-title">${esc(t.title || "未命名")}</div>
         <div class="row-sub"><span class="tag ${t.kind}">${t.kind === "bilibili" ? "B站" : t.kind === "url" ? "直链" : "本地"}</span>
+          ${absent ? '<span class="tag missing-file">原文件缺失</span>' : ""}
           <span>${esc(t.artist || "")}</span>${
             t.folder ? `<span class="tag folder-tag">${esc(t.folder)}</span>` : ""
           }${t.duration > 0 ? `<span>${fmt(t.duration)}</span>` : ""}</div>
@@ -494,7 +524,8 @@ function listView(list) {
       <button class="icon-btn folder-btn ${open ? "active" : ""}" data-act="row-folder" data-id="${esc(t.id)}" title="移到分类">${icon(
         "folder"
       )}</button>
-      <button class="icon-btn rename-btn" data-act="rename" data-id="${esc(t.id)}" title="重命名歌曲" aria-label="重命名：${esc(t.title)}">✎</button>
+      ${window.BARD_CLOUD ? `<button class="icon-btn rename-btn" data-act="rename" data-id="${esc(t.id)}" title="重命名歌曲" aria-label="重命名：${esc(t.title)}">✎</button>` : ""}
+      ${absent ? `<button class="icon-btn repair-btn" data-act="repair" data-id="${esc(t.id)}" title="为这首歌曲补传相同原文件" aria-label="补传：${esc(t.title)}">${icon("upload")}</button>` : ""}
       <button class="icon-btn" data-act="remove" data-id="${esc(t.id)}">${icon("trash")}</button>
     </div>${S.renaming?.id === t.id
         ? `<div class="rename-editor"><input class="input rename-input" maxlength="120" aria-label="新歌曲名称"
@@ -506,7 +537,9 @@ function listView(list) {
     .join("");
 
   const where = tab === "__all" ? "" : ` · 当前分类：${esc(tab === "__none" ? "未分类" : tab)}`;
-  return askHtml() + bar + rows + `<div class="foot">共 ${shown.length} 首${where} · 点标题立即切换</div>`;
+  return askHtml() + bar + auditing + rows +
+    '<input id="repair-file" type="file" accept="audio/*,.mp3,.m4a,.aac,.ogg,.opus,.wav,.flac,.webm" hidden />' +
+    `<div class="foot">共 ${shown.length} 首${where} · 点标题立即切换</div>`;
 }
 
 function addView() {
@@ -557,7 +590,8 @@ function cloudBackupView() {
     </div>
     <input id="backup-file" type="file" accept=".zip,application/zip" hidden />
     ${download}
-    <div class="foot">音频原文件缓存在各成员浏览器本地，需要时经云端中继传送；歌单和播放状态由房间 Metadata 同步（过大时使用 DO 快照）。只有手动点击下载，包含歌单和音频的 ZIP 备份才会保存到本机指定位置。</div>
+    ${S.restoreReport ? `<div class="notice ${S.restoreReportKind}"><span>${esc(S.restoreReport)}</span></div>` : ""}
+    <div class="foot">音频原文件缓存在浏览器本地，按需经云端中继（服务器不存歌）；歌单由房间 Metadata 同步，较大时使用 DO 快照。只有手动下载 ZIP 备份才会把歌单和音频保存到本机指定位置。</div>
   `;
 }
 
@@ -623,6 +657,7 @@ function playerView() {
       ? `<div class="notice err">本房间其他扩展占用较多 Room Metadata：当前总量 ${roomMeta.totalBytes} 字节，即使改用DO快照，Owlbear也容纳不下最小指针。需要房主清理其他扩展的过量房间元数据。</div>`
       : "";
     return `
+    ${noticeHtml()}
     <div class="empty">尚未取得本房间的咕咕音乐会话</div>
     <div class="player-note">可能是房主尚未使用本插件，也可能是当前设备的 Owlbear 房间元数据尚未同步。已安排有限次自动重读；如果房主明确正在播放，请打开诊断并复制报告，不要当成音频下载失败。</div>
     ${capacityWarning}
@@ -635,6 +670,7 @@ function playerView() {
   // 房间还没人控制：给主持一个入口（OBR 偶尔会把 GM 报成 PLAYER）
   const canClaim = !window.BARD_CLOUD && !S.now?.owner;
   return `
+  ${noticeHtml()}
   ${nowCard(false)}
   ${iosSyncButtonHtml()}
   ${S.status.blocked && !iosAudio ? `<button class="unlock" data-act="unlock">${icon("volume")}开启声音</button>` : ""}
@@ -918,15 +954,58 @@ async function doExportBackup() {
 async function doImportBackup(file) {
   if (!file || !window.BARD_CLOUD || !window.__cloudBridge) return;
   S.busy = "backup-import";
+  S.restoreReport = "";
+  S.restoreReportKind = "";
   render(true);
   try {
-    const { restored, added } = await window.__cloudBridge.importBackup(file);
-    toast(`已恢复 ${restored} 份音频，向歌单补充 ${added} 首。`);
+    const result = await window.__cloudBridge.importBackup(file);
+    const parts = [`成功恢复 ${result.restored} 份原文件`,
+      `已有 ${result.alreadyPresent} 份无需重复保存`,
+      `新增 ${result.added} 首歌单曲目`];
+    if (result.mismatched.length) {
+      parts.push(`${result.mismatched.length} 首同名但原文件不匹配，已跳过：${result.mismatched.slice(0, 3).join("、")}`);
+    }
+    if (result.missingFromZip.length) {
+      parts.push(`ZIP 中 ${result.missingFromZip.length} 首缺少对应文件，已跳过：${result.missingFromZip.slice(0, 3).join("、")}`);
+    }
+    if (result.failed.length) {
+      parts.push(`${result.failed.length} 份恢复时写入失败：${result.failed.slice(0, 3).map((f) => f.title).join("、")}`);
+    }
+    if (result.stillMissing.length) {
+      parts.push(`仍有 ${result.stillMissing.length} 首原文件缺失，请逐首补传：${result.stillMissing.slice(0, 3).join("、")}`);
+    }
+    if (result.memoryOnly) parts.push(`${result.memoryOnly} 份仅暂存内存，建议保存 ZIP 后使用正常浏览器恢复`);
+    S.restoreReport = parts.join("；") + "。";
+    S.restoreReportKind = result.mismatched.length || result.missingFromZip.length ||
+      result.failed.length || result.stillMissing.length || result.memoryOnly ? "warn" : "";
+    toast("ZIP 恢复结果已显示在设置页，请核对未恢复的曲目。", S.restoreReportKind || "info", 6500);
     await refreshState();
   } catch (err) {
-    toast(`恢复失败：${err.message}`, "err", 7000);
+    S.restoreReport = `ZIP 恢复失败：${err.message}`;
+    S.restoreReportKind = "err";
+    toast(`ZIP 无法恢复（格式/版本不兼容或文件校验失败时不导入；其他错误可能已有部分本地缓存）：${err.message}`, "err", 12000);
   } finally {
     S.busy = "";
+    render(true);
+  }
+}
+
+async function doRepair(file, trackId = S.repairId) {
+  if (!file || !trackId || !window.__cloudBridge || S.busy) return;
+  S.busy = "repair";
+  render(true);
+  try {
+    const { title, savedTo } = await window.__cloudBridge.repairTrack(trackId, file);
+    toast(savedTo === "memory"
+      ? `《${title}》已临时补回，但当前浏览器仅允许内存缓存，刷新后可能丢失`
+      : `《${title}》原文件校验通过并已补传，房间其他设备可按需获取`,
+    savedTo === "memory" ? "warn" : "info", 8000);
+    await refreshState();
+  } catch (error) {
+    toast(`原文件补传失败：${error.message}`, "err", 10000);
+  } finally {
+    S.busy = "";
+    S.repairId = "";
     render(true);
   }
 }
@@ -964,9 +1043,11 @@ document.addEventListener("click", (ev) => {
     if (!track) return toast("这首歌曲已从歌单中移除", "warn");
     S.renaming = { id, draft: track.title || "" };
     render(true);
-    const input = document.querySelector(".rename-input");
-    input?.focus();
-    input?.select();
+    setTimeout(() => {
+      const input = document.querySelector(".rename-input");
+      input?.focus();
+      input?.select();
+    }, 40);
     return;
   } else if (act === "rename-save") {
     saveRename();
@@ -974,6 +1055,10 @@ document.addEventListener("click", (ev) => {
   } else if (act === "rename-cancel") {
     S.renaming = null;
     render(true);
+    return;
+  } else if (act === "repair") {
+    S.repairId = id;
+    document.getElementById("repair-file")?.click();
     return;
   } else if (act === "pick-file") document.getElementById("file")?.click();
   else if (act === "add-bili") addBilibili();
@@ -1191,6 +1276,10 @@ document.addEventListener("change", (ev) => {
     const file = ev.target.files?.[0];
     ev.target.value = "";
     if (file) doImportBackup(file);
+  } else if (ev.target.id === "repair-file") {
+    const file = ev.target.files?.[0];
+    ev.target.value = "";
+    if (file) doRepair(file);
   } else if (ev.target.dataset.act === "master-vol") {
     // 松手：立刻把最终音量发出去，不依赖节流定时器
     flushMasterVolume(Number(ev.target.value) / 100);
@@ -1218,6 +1307,14 @@ document.addEventListener("drop", (ev) => {
   }
   const audio = files.filter(isAudioFile);
   if (!audio.length) return toast("只能拖入音频文件（mp3 / m4a / ogg / wav / flac）", "warn");
+  const repairId = ev.target.closest(".row[data-repair-id]")?.dataset.repairId;
+  if (repairId && window.BARD_CLOUD &&
+      (S.audioHealth?.localMissing || []).some((hash) =>
+        S.state?.playlist?.some((track) => track.id === repairId && track.hash === hash))) {
+    if (audio.length !== 1) return toast("请一次只拖入对应的一份歌曲原文件", "warn");
+    doRepair(audio[0], repairId);
+    return;
+  }
   doUpload(audio);
 });
 
@@ -1257,6 +1354,10 @@ async function boot() {
     });
     // 状态可能先于文件到达；收到 OPFS 校验成功事件后再准备可播放源。
     cloud.onFile(() => iosFollower?.prepare(S.now, { force: true }));
+    cloud.onHealth((health) => {
+      S.audioHealth = health;
+      render();
+    });
   }
   const tab = new URLSearchParams(location.search).get("tab");
   if (["list", "add", "settings"].includes(tab)) S.tab = tab;

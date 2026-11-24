@@ -13,11 +13,30 @@ import { CLOUD_RELEASE_VERSION } from "../public/cloud/release-version.js";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = path.join(root, "public");
 const destination = path.join(root, "dist-cloud");
-// 开发服务器在 Windows 上读取静态文件时可能锁定输出目录，整个 rmdir 会报
-// EBUSY。直接覆盖拷贝只更新受 Git 管理的 public/ 资源，不影响正在运行的服务。
-// 全新 worktree 的 dist-cloud/ 本来不存在；正式部署可用 rm -r 离线清理旧产物。
+// Windows 的开发服务器可能锁住整个输出目录，避免整体 rmdir。
+// 但仅覆盖拷贝会留下源码已经删除的旧静态文件（如原音频直链下载模块）。
+// 复制后定向清理已不存在于 public/ 中的文件，避免把停用模块重新发布。
 await fs.mkdir(destination, { recursive: true });
 await fs.cp(source, destination, { recursive: true });
+async function pruneStaleAssets(fromDir, toDir, rootLevel = false) {
+  for (const entry of await fs.readdir(toDir, { withFileTypes: true })) {
+    // 两个额外生成的资产不要求存在于 public/。
+    if (rootLevel && (entry.name === "config.js" || entry.name === "_headers")) continue;
+    const sourceEntry = path.join(fromDir, entry.name);
+    const outputEntry = path.join(toDir, entry.name);
+    let original;
+    try { original = await fs.stat(sourceEntry); }
+    catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      await fs.rm(outputEntry, { recursive: true, force: true });
+      continue;
+    }
+    if (entry.isDirectory() && original.isDirectory()) {
+      await pruneStaleAssets(sourceEntry, outputEntry);
+    }
+  }
+}
+await pruneStaleAssets(source, destination, true);
 await fs.writeFile(path.join(destination, "config.js"),
   "// 云版：播放同步在 Owlbear，文件中转只使用 Durable Objects。\n" +
   'window.BARD_API = "";\nwindow.BARD_CLOUD = true;\n', "utf8");
