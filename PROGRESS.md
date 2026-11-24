@@ -1,9 +1,12 @@
-## 2026-11-24 · v3.3.9 iPhone 滚动修复第二轮（发布验证中）
+## 2026-11-24 · v3.3.9 iPhone 滚动修复第二轮（已发布，待真机验收）
 
 - 用户明确反馈 v3.3.8 真机 Safari 中仍不能滚动。重新分析：仅让 `.app` 填满 iframe 并不足够，宿主可能把 Manifest 640px 的 iframe 裁成可见约470px，而内部 .main 仍按640px计算是否溢出。
 - 采用三重独立修复：通过官方 Owlbear `action.setHeight` 将窄屏 iPhone 弹窗请求高度降低至设备屏幕的约58%（上限500px）；WebKit 兼容的 fixed .app + .main 滚动安全余量；顶部新增 ↓/↑ 翻页按钮可直接推动 scrollTop。iOS 手指上滑原生未生效时使用非侵入式 touchmove 回退，跳过所有表单和播放器拖动控制。
 - 测试：Chrome 触屏390px宽，真实640px iframe被470px宿主裁切：旧版本 `.main` scrollRange仅35px，底部控件最大滚动后仍超出裁剪；新版本可通过手势移动140px、点击箭头移动229px，目标控件完整出现。静态资源使用 v3.3.9 查询参数避免旧Safari缓存；匿名诊断新增 iframe/滚动数值供真机后续验证。
 - iOSLab状态确认专用测试iPad离线，且明确拒绝回退到未授权iPhone；本轮尚无法声称真实iPhone WebKit端到端通过。
+- **生产发布**：已部署 https://music.zjhstudio.com，Worker `gugu-music-cloud` 版本 ID `9ed0456c-ed52-410c-800f-35157a383645`；线上 manifest=3.3.9，HTML 加载 `style.css?v=3.3.9`、`app.js?v=3.3.9`，包含顶部 ↓ 按钮、新触摸兜底和 Owlbear Action 高度调整模块。
+- **验证**：云版 88/88、旧 Node 42/42、构建和发布前检查、线上 HTTP/CORS 6/6 均通过；模拟 Owlbear 外层 470px 裁切内部 640px iframe，旧版本 scrollRange 35px 看不到底部，新版本手势移动140px、按 ↓ 移动229px 使底部进入可见区。在320px触屏窗口顶栏未溢出。
+- 未连接真实 iPhone WebKit，设备端表现必须由用户复测；如果仍失败，可从面板顶部设置打开诊断并生成带 `mobileLayout` 数值的匿名报告。
 
 ## 2026-11-24 · v3.3.8 修复 Owlbear iPhone 浮窗半屏空白（正式上线）
 
