@@ -8,6 +8,8 @@
 - **构建确定性**：Windows 下不整体清空 `dist-cloud/`，改为增量复制后删除源码已移除的过期文件，并在 verify 检查完全一致；已确认旧 `remote-import.js` 不再出现在发布资产中。
 - **预发布验收**：云版单测 82/82 通过，正式构建、静态资源校验、发布敏感信息检查和 Wrangler dry-run 均通过；Chrome 访问临时 `http://127.0.0.1:8790` 隔离房间验证 GM 初次与刷新后的全歌单核对、红色缺失标签、错误SHA拒绝补传、正确补传与 ZIP 恢复、重命名不改时钟、ZIP下载按钮无下划线。另开 PLAYER 页确认3首歌完整可见、确实发起缺失请求且向 GM 广播缺失音源。
 - **正式部署**：原域名 `https://music.zjhstudio.com`，Worker `gugu-music-cloud` 版本 ID `6ce6b260-a00e-4732-bd82-036bc69e44c0`，Manifest `3.3.6`；保留旧房间/DO 绑定，不涉及迁移。线上静态资源 HTTP 200+CORS 6/6 全通过；删掉的 `/cloud/remote-import.js` 返回 HTTP 404，新 `source-health.js` HTTP 200。真实 Chrome 正式域名隔离 GM 页确认只显示本地上传与较大的 Parabolic 引导，备份/Metadata 说明正常。
+- **额外兼容自检与归档**：原版 Node `npm run selftest` 在本机 8799 端口恢复空闲后重跑，**42/42 通过**。本地 Wrangler 临时服务器已停止（8790 端口释放），隔离 Chrome GM/PLAYER/线上测试标签均关闭，测试房间元数据及两个测试 WAV 文件也已清理。没有向用户真实 Owlbear 房间注入歌曲。
+- **GitHub**：`feat/cloud-do-opfs` 已推送到 `ZJHSteven/gugu-music-player`，功能代码提交 `111b48cd99e31dae66e90c4408dcd24fb1061cd3`；上游 `doveris263/gugu-music-player` 的 [PR #1](https://github.com/doveris263/gugu-music-player/pull/1) 已更新为 v3.3.6 的功能/测试/部署说明，当前仍为 OPEN，且因上游并行更新存在合并冲突，尚未合并。
 
 ## 2026-11-23 · v3.3.5 云版音频导入界面精简（正式上线）
 
