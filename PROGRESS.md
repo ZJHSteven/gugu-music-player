@@ -1,4 +1,4 @@
-## 2026-11-24 · v3.3.10 歌单管理、多端 GM、移动惯性（部署准备）
+## 2026-11-24 · v3.3.10 歌单管理、多端 GM、移动惯性（已发布）
 
 - 统一歌曲操作图标 24×24px，内部 SVG 14px；点击铅笔就在原歌曲标题处输入，取消/保存不再额外增加一行。分类加号在原胶囊原地动画展开，空白变叉号、有字变勾号。
 - 歌单支持左侧拖动把手和键盘上下移动，调用已有 playlist.move 后保存房间 Metadata；改名、排序、分类创建、移入分类都不改变当前播放 anchor、seq 或 clockId。
@@ -6,7 +6,9 @@
 - 修复每次缓存巡检瞬间插入/删除告示、毫秒级缓冲状态触发整张歌单重绘的闪烁。
 - iPhone JS 手动滚动兜底加入指数减速惯性、下一次触摸立即停止，并让 Safari 原生惯性优先；真机手感待用户复测。
 - 真 Chrome 测试五枚歌曲按钮24px、原地重命名、胶囊分类保存、键盘和鼠标拖动使曲目 ID 顺序变化且 playback.anchor 不变。独立 Chrome 浏览器存储的两个 GM 经 DO 实传 120000B，接收端 requested=1、verified=1、owned=true、localMissing=0。测试房间使用随机独立标识，未动用户真实房间。
-- 发布前将重新运行云版/旧 Node 套件、构建一致性检查及 Cloudflare dry-run，再部署和同步上游 PR。
+- **已发布**：云版95/95、旧Node42/42、构建及Cloudflare dry-run全部通过。正式域名 https://music.zjhstudio.com 的 manifest 为 v3.3.10，首页/JS/CSS/后台播放器等6项在线资源均HTTP200；Worker版本ID `38190485-3b1c-4e2a-bfb0-ce845bac0792`。
+- **GitHub**：电脑原GitHub凭据过期，改用已连接的GitHub Git数据接口。逐一上传并核对全部16个修改文件的Git blob SHA，生成的完整树 `aaa4ad1282c0ccd6f8710898f0574130d9a65e57` 与本地测试提交完全一致。fork分支 `feat/cloud-do-opfs` 更新到 `f7b165b199ab909fab35ec060177504c72a7827b`，上游PR#1代码head自动更新；但原仓库API权限403导致标题/正文无法同步，原有上游合并冲突仍在。
+- **本地安全对齐**：将历史6个本地提交保留在 `backup/v3.3.10-pre-api-sync-20261124`，原工作分支同步到 fork 新head，Git工作区干净；真机Safari惯性手感仍需用户反馈。
 
 ## 2026-11-24 · v3.3.9 iPhone 滚动修复第二轮（已发布，待真机验收）
 
