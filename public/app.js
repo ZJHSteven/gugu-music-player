@@ -6,7 +6,6 @@ import { makeDiagnosticReport } from "./cloud/diagnostics.js";
 import { anonymousRoomCode } from "./cloud/metadata-inspection.js";
 import { shouldRetryOwlbear, resetOwlbearRetries } from "./obr-identity.js";
 import { IosSyncAudio } from "./cloud/ios-sync-audio.js";
-import { downloadDirectAudio } from "./cloud/remote-import.js";
 
 window.__appBuild = "build-folders-1";
 
@@ -52,8 +51,7 @@ const S = {
   notice: null,
   claimError: "",
   biliUrl: "",
-  directUrl: "",
-  directTitle: "",
+  renaming: null, // 正在编辑的曲目名：{ id, draft }；只变更 Metadata，不改音频哈希
   playerSettingsOpen: false,
   drag: null,
   folderTab: "__all",
@@ -461,7 +459,7 @@ function listView(list) {
 
   const bar = folderBar();
   if (!list.length) {
-    return `${bar}<div class="empty">${icon("music")}<div>还没有曲目</div><div>${window.BARD_CLOUD ? "切到「添加」，可上传本地音频或输入 HTTPS 音频直链" : "切到「添加」，放本地文件或粘贴 B 站链接"}</div></div>`;
+    return `${bar}<div class="empty">${icon("music")}<div>还没有曲目</div><div>${window.BARD_CLOUD ? "切到「添加」，上传本地音频文件" : "切到「添加」，放本地文件或粘贴 B 站链接"}</div></div>`;
   }
   if (!shown.length) {
     return `${bar}<div class="empty">${icon("music")}<div>这个分类还是空的</div><div>切到「添加」上传，曲目会进到当前分类</div></div>`;
@@ -495,8 +493,14 @@ function listView(list) {
       <button class="icon-btn folder-btn ${open ? "active" : ""}" data-act="row-folder" data-id="${esc(t.id)}" title="移到分类">${icon(
         "folder"
       )}</button>
+      <button class="icon-btn rename-btn" data-act="rename" data-id="${esc(t.id)}" title="重命名歌曲" aria-label="重命名：${esc(t.title)}">✎</button>
       <button class="icon-btn" data-act="remove" data-id="${esc(t.id)}">${icon("trash")}</button>
-    </div>${menu}`;
+    </div>${S.renaming?.id === t.id
+        ? `<div class="rename-editor"><input class="input rename-input" maxlength="120" aria-label="新歌曲名称"
+             value="${esc(S.renaming.draft)}" placeholder="输入新的歌曲名称" />
+             <button class="btn primary" data-act="rename-save">保存</button>
+             <button class="btn" data-act="rename-cancel">取消</button></div>`
+        : ""}${menu}`;
     })
     .join("");
 
@@ -531,21 +535,7 @@ function addView() {
   </div>
   ` : ""}
   ${window.BARD_CLOUD ? `
-  <div class="field">
-    <div class="label">音频直链 <span class="hint">HTTPS，需允许浏览器跨域下载</span></div>
-    <input class="input" id="direct-url" placeholder="https://…/music.mp3"
-      value="${esc(S.directUrl)}" />
-    <div class="row2" style="margin-top:8px">
-      <input class="input" id="direct-title" placeholder="歌曲名称（可选）"
-        value="${esc(S.directTitle)}" />
-      <button class="btn primary" data-act="add-direct" ${S.busy ? "disabled" : ""}>${
-        S.busy === "direct" ? "导入中…" : "添加"
-      }</button>
-    </div>
-    <div class="foot" style="text-align:left;padding-top:6px">只保存已成功下载的音频到浏览器 OPFS；不把直链、授权参数或 Cookie 发送给房间成员。</div>
-  </div>
-  <div class="foot" style="text-align:left">B 站 / YouTube 音频可使用 <a href="https://github.com/NickvisionApps/Parabolic/releases" target="_blank" rel="noopener noreferrer">Parabolic（yt-dlp 图形版）</a> 下载，再从上方「本地音乐」上传。</div>
-  <div class="foot" style="text-align:left">歌曲保存在成员浏览器本地，缺失内容通过房间中继共享。请在设置中定期导出 ZIP 备份。</div>` : ""}
+  <div class="import-tip">云端版不再自动下载 B 站 / YouTube 音频。可使用其他视频链接解析下载工具（如开源 <a href="https://github.com/NickvisionApps/Parabolic/releases" target="_blank" rel="noopener noreferrer">Parabolic</a>）下载音频，再从上方「本地音乐」上传。</div>` : ""}
   `;
 }
 
@@ -554,7 +544,7 @@ function cloudBackupView() {
   if (!window.BARD_CLOUD) return "";
   const disabled = S.busy ? "disabled" : "";
   const download = S.backupUrl
-    ? `<a class="btn block primary" style="display:block;text-align:center;margin-top:10px"
+    ? `<a class="btn block primary backup-download" role="button"
         href="${esc(S.backupUrl)}" download="${esc(S.backupName)}">下载已生成的 ZIP 备份</a>`
     : "";
   return `
@@ -566,7 +556,7 @@ function cloudBackupView() {
     </div>
     <input id="backup-file" type="file" accept=".zip,application/zip" hidden />
     ${download}
-    <div class="foot">文件只会保存到你手动下载的位置，不会上云。恢复时只增加缺失歌曲，不会自动开始播放。</div>
+    <div class="foot">音频原文件缓存在各成员浏览器本地，需要时经云端中继传送；歌单和播放状态由房间 Metadata 同步（过大时使用 DO 快照）。只有手动点击下载，包含歌单和音频的 ZIP 备份才会保存到本机指定位置。</div>
   `;
 }
 
@@ -602,7 +592,7 @@ function settingsView() {
   <div class="kv"><span>控制权</span><span>${S.status.hasToken ? "已取得" : "未取得"}</span></div>
   <div class="kv"><span>曲目数</span><span>${S.state?.playlist?.length ?? 0}</span></div>
   ${cloudBackupView()}
-  ${window.BARD_CLOUD ? '<div class="foot">云端版：播放控制权由 Owlbear 房主角色决定；房间同步不发送服务器心跳。</div>' : `<div class="row2" style="margin-top:14px">
+  ${window.BARD_CLOUD ? "" : `<div class="row2" style="margin-top:14px">
     <button class="btn block" data-act="reclaim">重新取得控制权</button>
     <button class="btn block" data-act="release">让出控制权</button>
   </div>
