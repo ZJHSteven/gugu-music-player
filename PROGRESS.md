@@ -1,3 +1,10 @@
+## 2026-11-24 · v3.3.8 修复 Owlbear iPhone 浮窗半屏空白（发布中）
+
+- 用户截图中 PLAYER/DM 面板顶部「正在播放」卡片正常，但黄色「开启并同步房间声音」按钮在中途被截断，下方整个 Owlbear iframe 是空白背景。
+- 直接定位于 `public/style.css` 旧触屏窄屏规则 `.app { height:min(100dvh,320px); max-height:min(100%,320px) }`，以及额外 150px 的 `.main` 底部 padding；两者来自历史的 iOS 滚动临时绕过，不适合新的高浮窗。
+- 现改为移动端 `.app{height:100%;max-height:100%}` 填满 iframe，`.main` 保持原 flex/overflow-y:auto 和正常 safe-area 底边距。桌面端规则不变，避免影响房间音频和歌单。
+- CDP Chrome 移动触屏仿真 390×650 证实旧 app=320px、新 app=650px；两个内嵌 iframe 高 280/620px 时 app 高度准确匹配且可滚动到最后元素。新增自动化 CSS 回归测试，后续发布待完成。
+
 ## 2026-11-24 · v3.3.7 补传音频版本差异与 PLAYER 快速预取（正式上线）
 
 - 上版 v3.3.6 的「重命名」已通过 UI 与状态机测试，且不会更改音频文件哈希或播放时间轴；本版继续保留。
