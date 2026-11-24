@@ -25,22 +25,35 @@ export function validatePlaylist(state) {
 }
 
 /**
- * 每个浏览器独立保存原文件。手机本地没有缓存并不代表歌曲损坏，
- * 同账号电脑 GM 也只是另一个可向 DO 提供文件的在线来源。
+ * 本机可读性和 DO 当前在线音源是两份证据，不能互相替代：
+ * - localMissing 只表示本机没有读到“完整且哈希正确”的副本；
+ * - fetching 只是 need 已发送，并不证明远程节点已响应或开始送块；
+ * - unavailable 是 DO 查询当时没有已登记的在线持有者，并非永久丢失；
+ * - transferFailed 是另一类错误：来源可能在线，但传输/保存失败。
+ *
+ * DO 没有离线设备的持久库存，故不能宣称文件永久丢失。所有提示均明确
+ * 限定当前本机、当前在线连接或已经观察到的传输结果。
  */
 export function describeLocalAudio(hash, health = {}) {
   if (!hash) return null;
-  if ((health.corrupt || []).some((entry) => entry.hash === hash)) {
-    return { status: "corrupt", label: "本机缓存校验异常" };
+  const invalid = (health.corrupt || []).find((entry) => entry.hash === hash);
+  if (invalid) {
+    if (invalid.reason === "read-failed") {
+      return { status: "storage-error", label: "本机文件读取异常" };
+    }
+    return { status: "corrupt", label: "本机缓存校验不通过" };
   }
-  if ((health.fetching || []).includes(hash)) {
-    return { status: "fetching", label: "正在同步" };
+  if ((health.transferFailed || []).includes(hash)) {
+    return { status: "transfer-error", label: "传输失败 · 请检查网络" };
   }
   if ((health.unavailable || []).includes(hash)) {
-    return { status: "offline", label: "等待音源设备上线" };
+    return { status: "offline", label: "当前无在线音源 · 可补传" };
+  }
+  if ((health.fetching || []).includes(hash)) {
+    return { status: "fetching", label: "已请求音源 · 尚未完成" };
   }
   if ((health.localMissing || []).includes(hash)) {
-    return { status: "pending", label: "本机待同步" };
+    return { status: "pending", label: "本机未检出有效缓存" };
   }
   return null;
 }

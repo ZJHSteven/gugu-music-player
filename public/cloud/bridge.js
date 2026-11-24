@@ -58,6 +58,7 @@ export class CloudBridge {
     this.healthListeners = new Set();
     this.audioHealth = {
       checking: false, localMissing: [], corrupt: [], fetching: [], unavailable: [],
+      transferFailed: [],
       remoteMissing: [], metadataError: "", transferError: "",
     };
     this.lastMissingBroadcast = new Map();
@@ -273,20 +274,26 @@ export class CloudBridge {
       });
       return;
     }
-    if (event.type === "unavailable" || event.type === "transfer-error") {
+    if (event.type === "unavailable") {
       this.updateHealth({
         fetching: this.audioHealth.fetching.filter((x) => x !== hash),
+        unavailable: [...new Set([...this.audioHealth.unavailable, hash])],
       });
-      this.updateHealth({ unavailable: [...new Set([...this.audioHealth.unavailable, hash])] });
-      if (event.type === "transfer-error") {
-        this.updateHealth({ transferError: "音频多次传输失败，已提醒房主检查原文件或网络连接" });
-      }
       const now = Date.now();
       if (now - (this.lastMissingBroadcast.get(hash) || 0) > 60_000) {
         this.lastMissingBroadcast.set(hash, now);
         this.OBR.broadcast.sendMessage(BROADCAST_CHANNEL,
           { t: "audio-unavailable", hash }).catch(console.warn);
       }
+    } else if (event.type === "transfer-error") {
+      // 超时/保存失败说明一次传输没有完成，不能据此证明 DO 无在线音源。
+      // 此分支不发送 audio-unavailable 广播，避免误导其他 GM 去补传。
+      this.updateHealth({
+        fetching: this.audioHealth.fetching.filter((x) => x !== hash),
+        unavailable: this.audioHealth.unavailable.filter((x) => x !== hash),
+        transferFailed: [...new Set([...this.audioHealth.transferFailed, hash])],
+        transferError: "音频传输或本机保存失败，可检查网络与缓存后重试",
+      });
     } else if (event.type === "source-found" || event.type === "available") {
       const wasMissing = this.audioHealth.unavailable.includes(hash) ||
         this.audioHealth.remoteMissing.includes(hash);
@@ -295,6 +302,7 @@ export class CloudBridge {
         remoteMissing: this.audioHealth.remoteMissing.filter((x) => x !== hash) };
       if (event.type === "available") {
         change.fetching = this.audioHealth.fetching.filter((x) => x !== hash);
+        change.transferFailed = this.audioHealth.transferFailed.filter((x) => x !== hash);
       }
       if (event.type === "available") {
         change.localMissing = this.audioHealth.localMissing.filter((x) => x !== hash);
@@ -333,6 +341,7 @@ export class CloudBridge {
       localMissing: this.audioHealth.localMissing.filter((hash) => validHashes.has(hash)),
       fetching: this.audioHealth.fetching.filter((hash) => validHashes.has(hash)),
       unavailable: this.audioHealth.unavailable.filter((hash) => validHashes.has(hash)),
+      transferFailed: this.audioHealth.transferFailed.filter((hash) => validHashes.has(hash)),
       remoteMissing: this.audioHealth.remoteMissing.filter((hash) => validHashes.has(hash)),
     });
     const clockId = state.playback?.clockId || "";

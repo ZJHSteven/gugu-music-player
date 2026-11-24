@@ -308,18 +308,53 @@ test("ZIP 恢复按哈希补原文件：旧标题不重复加歌；同名不同�
   } finally { cleanup(bridge); }
 });
 
-test("多 GM 设备是独立缓存：本机待同步并不等于音频源文件永久丢失", () => {
+test("缓存与中继证据分级：缺本地文件、查询音源、无在线源、传输异常各有明确文案", () => {
   const hash = "5".repeat(64);
   assert.deepEqual(describeLocalAudio(hash, { localMissing: [hash] }),
-    { status: "pending", label: "本机待同步" });
+    { status: "pending", label: "本机未检出有效缓存" });
   assert.deepEqual(describeLocalAudio(hash, { localMissing: [hash], fetching: [hash] }),
-    { status: "fetching", label: "正在同步" });
+    { status: "fetching", label: "已请求音源 · 尚未完成" });
   assert.deepEqual(describeLocalAudio(hash, { localMissing: [hash], unavailable: [hash] }),
-    { status: "offline", label: "等待音源设备上线" });
+    { status: "offline", label: "当前无在线音源 · 可补传" });
   assert.deepEqual(describeLocalAudio(hash, { localMissing: [hash],
     corrupt: [{ hash, reason: "hash-mismatch" }] }),
-    { status: "corrupt", label: "本机缓存校验异常" });
+    { status: "corrupt", label: "本机缓存校验不通过" });
+  assert.deepEqual(describeLocalAudio(hash, { localMissing: [hash],
+    corrupt: [{ hash, reason: "read-failed" }] }),
+    { status: "storage-error", label: "本机文件读取异常" });
+  assert.deepEqual(describeLocalAudio(hash, { localMissing: [hash],
+    transferFailed: [hash], fetching: [hash] }),
+    { status: "transfer-error", label: "传输失败 · 请检查网络" });
+  assert.deepEqual(describeLocalAudio(hash, { localMissing: [hash],
+    unavailable: [hash], fetching: [hash] }),
+    { status: "offline", label: "当前无在线音源 · 可补传" },
+    "DO明确未找到在线来源后不能仍显示正在同步");
   assert.equal(describeLocalAudio(hash, { localMissing: [] }), null);
+});
+
+test("DO无在线来源和文件传输失败是两种独立事实，不可混成原文件丢失", async () => {
+  let state = createState("f".repeat(32));
+  const hash = "9".repeat(64);
+  state = addTrack(state, { title: "保留原文件状态", hash, size: 123 });
+  const { bridge, messages } = makeBridge(state);
+  try {
+    await bridge.start();
+    bridge.onAudioAvailability({ type: "requesting", hash });
+    assert.deepEqual(bridge.audioHealth.fetching, [hash]);
+    bridge.onAudioAvailability({ type: "transfer-error", hash, reason: "timeout" });
+    assert.deepEqual(bridge.audioHealth.unavailable, []);
+    assert.deepEqual(bridge.audioHealth.transferFailed, [hash]);
+    assert.equal(messages.some((m) => m.t === "audio-unavailable"), false,
+      "下载超时不能被广播为不存在在线原文件");
+    bridge.onAudioAvailability({ type: "available", hash });
+    assert.deepEqual(bridge.audioHealth.transferFailed, []);
+    bridge.onAudioAvailability({ type: "requesting", hash });
+    bridge.onAudioAvailability({ type: "unavailable", hash });
+    assert.deepEqual(bridge.audioHealth.unavailable, [hash]);
+    assert.deepEqual(bridge.audioHealth.fetching, []);
+    assert.ok(messages.some((m) => m.t === "audio-unavailable"),
+      "仅DO无法找到在线来源才发出此类广播");
+  } finally { cleanup(bridge); }
 });
 
 test("同账号另一台设备上线后，已判暂无来源的本机自动重新请求文件", async () => {

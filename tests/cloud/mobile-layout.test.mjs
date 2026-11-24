@@ -16,8 +16,8 @@ test("移动端 iframe 采用固定视口滚动和充足滚动余量，保留手
   assert.match(css, /\.main\s*\{[^}]*padding:[^}]*safe-area-inset-bottom/);
   const page = await readFile(new URL("../../public/index.html",import.meta.url),"utf8");
   assert.match(page,/data-act="mobile-scroll"/);
-  assert.match(page,/style\.css\?v=3\.3\.10/);
-  assert.match(page,/app\.js\?v=3\.3\.10/);
+  assert.match(page,/style\.css\?v=3\.3\.11/);
+  assert.match(page,/app\.js\?v=3\.3\.11/);
 });
 
 test("只在窄屏 iPhone 使用官方 Owlbear Action API 缩小高于可视区域的浮窗", async () => {

@@ -157,6 +157,8 @@ html.cloud-mode .diag-jump { display: inline-flex; }
 .tag.audio-source.fetching { color: #85c1f2; border-color: rgba(133,193,242,.4); background: rgba(133,193,242,.08); }
 .tag.audio-source.offline { color: #f2ce90; border-color: rgba(242,206,144,.5); background: rgba(242,206,144,.1); }
 .tag.audio-source.corrupt { color: #ff939e; border-color: var(--red); background: rgba(224,108,117,.17); }
+.tag.audio-source.storage-error { color: #f2ce90; border-color: rgba(242,206,144,.5); background: rgba(242,206,144,.1); }
+.tag.audio-source.transfer-error { color: #ff939e; border-color: var(--red); background: rgba(224,108,117,.17); }
 .repair-btn { color: var(--red); }
 .row-sub { flex-wrap: wrap; }
 .rename-input { height: 26px; padding: 0 6px; width: 100%; font-size: 12.5px;

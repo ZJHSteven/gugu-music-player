@@ -6,4 +6,4 @@
  * 由 v3.2.7 引入后统一用于 v3.3 集成开发；任何预发布版号调整必须
  * 同时反映在 manifest 与玩家诊断，避免将开发版误认为正式线上版本。
  */
-export const CLOUD_RELEASE_VERSION = "3.3.10";
+export const CLOUD_RELEASE_VERSION = "3.3.11";

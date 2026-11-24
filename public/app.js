@@ -349,14 +349,14 @@ function noticeHtml() {
     const offline = health.localMissing.filter((hash) =>
       (health.unavailable || []).includes(hash)).length;
     if (offline) {
-      problems.push(`本机有 ${offline} 首歌曲暂时找不到在线音源。请让存有文件的电脑或其他 GM 设备同时在线，将自动同步；也可手动补传。`);
+      problems.push(`本机有 ${offline} 首歌曲目前没有找到在线音源。这不证明原文件永久丢失：如其他设备还保存着原文件，请将它上线；若各设备都没有，请直接补传。`);
     }
   }
   if (S.role === "GM" && health?.corrupt?.length) {
-    problems.push(`本机有 ${health.corrupt.length} 份缓存校验异常，正等待可靠来源或手动补传。`);
+    problems.push(`本机有 ${health.corrupt.length} 份音频无法通过读取或完整性检查，可从其他有效副本恢复或手动补传。`);
   }
   if (S.role === "GM" && health?.remoteMissing?.length) {
-    problems.push(`有房间成员报告 ${health.remoteMissing.length} 首歌曲暂时没有在线音源；文件可能仍保存在离线设备中。`);
+    problems.push(`有房间成员报告 ${health.remoteMissing.length} 首歌曲在请求时未找到在线音源；可能需要上线存有原件的设备或重新补传。`);
   }
   if (S.role !== "GM" && S.now?.track?.hash &&
       health?.unavailable?.includes(S.now.track.hash)) {
