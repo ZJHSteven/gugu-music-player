@@ -365,7 +365,7 @@ export class CloudBridge {
    * 串行化同个页面中的操作，避免连续按钮把早期状态覆盖到最新元数据上。
    * 不同设备同时操作的冲突由 GM 权限约束；同一 GM 多端并发仍应避免。
    */
-  change(transform) {
+  change(transform, { metadataOnly = false } = {}) {
     const result = this.writeChain.then(async () => {
       if (!await this.isGM()) throw new Error("需要 Owlbear 房主权限");
       await this.refresh();
@@ -390,8 +390,14 @@ export class CloudBridge {
       }
       // 已完成状态变更后，把锚点从旧设备时钟转换到「本设备」时钟，
       // 同时更新唯一时钟源。其他客户端收到 metadata 后只向该设备校准。
-      next.playback.anchor -= offset;
-      next.playback.clockId = this.deviceId;
+      if (metadataOnly) {
+        // 重命名只更新歌单描述，沿用原来的播放源/时间锚点。
+        // 不允许更改歌名造成所有设备重新校时或跳曲。
+        next.playback = { ...this.state.playback };
+      } else {
+        next.playback.anchor -= offset;
+        next.playback.clockId = this.deviceId;
+      }
       return this.commit(next);
     });
     this.writeChain = result.catch(() => {});
@@ -417,7 +423,10 @@ export class CloudBridge {
     }
     if (/\/heartbeat$/.test(path)) return {};
     if (/\/release$/.test(path)) return {};
-    if (/\/command$/.test(path)) return this.change((s, now) => applyCommand(s, body, now));
+    if (/\/command$/.test(path)) return this.change(
+      (s, now) => applyCommand(s, body, now),
+      { metadataOnly: body?.type === "track.update" }
+    );
     if (/\/tracks\/bilibili$/.test(path)) {
       throw new Error("云版暂未支持原版需要 Node 抓取的 B 站歌曲；请先上传本地音频文件");
     }

@@ -151,6 +151,7 @@ function render(force) {
       folderTab: S.folderTab,
       folders: (S.state?.folders || []).join("|"),
       fmap: (S.state?.playlist || []).map((t) => t.folder || "").join("|"),
+      renamingId: S.renaming?.id || "",
       playerSettingsOpen: S.playerSettingsOpen,
       diagnosticsOpen: S.diagnosticsOpen,
       diagnosticsBusy: S.diagnosticsBusy,
@@ -743,6 +744,34 @@ async function moveTrackTo(trackId, folder) {
     toast(err.message, "err");
   }
 }
+/**
+ * 歌名只存在于房间 Metadata；改名调用现有 track.update 指令。
+ * 音频字节仍按原 SHA-256 存在 OPFS，不重新上传、不改变房间播放位置。
+ * 使用内嵌编辑框而非 window.prompt，兼容 Owlbear iframe 和手机浏览器。
+ */
+async function saveRename() {
+  const editing = S.renaming;
+  if (!editing) return;
+  const title = editing.draft.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  if (!title || title.length > 120) {
+    toast("歌曲名称不能为空，且不能超过 120 个字符", "warn");
+    return;
+  }
+  if (!token()) return toast("需要房主控制权才能重命名", "err");
+  try {
+    const result = await apiPost(
+      `/api/rooms/${encodeURIComponent(S.roomId)}/command`,
+      { type: "track.update", trackId: editing.id, patch: { title } }, token()
+    );
+    S.renaming = null;
+    if (result?.state) S.state = result.state;
+    if (result?.now) bus?.post({ t: "now", now: result.now });
+    toast("歌曲名称已同步到房间歌单");
+    render(true);
+  } catch (error) {
+    toast(`重命名失败：${error.message}`, "err", 7000);
+  }
+}
 // 内联 onclick 直接调用，避免事件委托在某些环境下收不到（也更好调试）
 // 单曲循环开关：走内联 onclick，和分类按钮同一套写法
 window.__bardLoop = () => {
@@ -822,46 +851,6 @@ async function addBilibili() {
     toast(err.message, "err", 8500);
   } finally {
     S.busy = "";
-    render(true);
-  }
-}
-
-async function addDirectAudio() {
-  const url = (document.getElementById("direct-url")?.value || S.directUrl || "").trim();
-  const title = (document.getElementById("direct-title")?.value || S.directTitle || "").trim();
-  if (!url) return toast("先粘贴一个音频 HTTPS 直链", "warn");
-  if (S.busy) return;
-  S.directUrl = url;
-  S.directTitle = title;
-  S.busy = "direct";
-  S.uploading = { name: title || "正在读取音频直链", pct: 0.01 };
-  render(true);
-  try {
-    const file = await downloadDirectAudio(url, {
-      title,
-      onProgress: p => {
-        S.uploading = { name: title || "音频直链", pct: p * 0.8 };
-        render();
-      },
-    });
-    const duration = await mediaDuration(file).catch(() => 0);
-    await uploadTrack({
-      roomId: S.roomId, token: token(), file, duration,
-      folder: activeFolder(), meta: { kind: "url" },
-      onProgress: p => {
-        S.uploading = { name: file.name, pct: 0.8 + p * 0.2 };
-        render();
-      },
-    });
-    S.directUrl = "";
-    S.directTitle = "";
-    toast("音频直链已完整导入歌单");
-    await refreshState();
-  } catch (err) {
-    toast(`直链导入失败：${err.message}`, "err", 10000);
-  } finally {
-    S.busy = "";
-    S.uploading = null;
     render(true);
   }
 }
@@ -970,9 +959,24 @@ document.addEventListener("click", (ev) => {
   else if (act === "pick") command({ type: "select", trackId: id });
   else if (act === "remove") {
     askConfirm("从歌单移除这首？", { type: "playlist", op: "remove", trackId: id });
+  } else if (act === "rename") {
+    const track = S.state?.playlist?.find((item) => item.id === id);
+    if (!track) return toast("这首歌曲已从歌单中移除", "warn");
+    S.renaming = { id, draft: track.title || "" };
+    render(true);
+    const input = document.querySelector(".rename-input");
+    input?.focus();
+    input?.select();
+    return;
+  } else if (act === "rename-save") {
+    saveRename();
+    return;
+  } else if (act === "rename-cancel") {
+    S.renaming = null;
+    render(true);
+    return;
   } else if (act === "pick-file") document.getElementById("file")?.click();
   else if (act === "add-bili") addBilibili();
-  else if (act === "add-direct") addDirectAudio();
   else if (act === "backup-export") doExportBackup();
   else if (act === "backup-import") document.getElementById("backup-file")?.click();
   else if (act === "toggle-hide") command({ type: "settings", hideTitle: !S.state?.settings?.hideTitle });
@@ -1139,9 +1143,9 @@ async function seekTo(seconds) {
 document.addEventListener("input", (ev) => {
   const el = ev.target;
   if (el.id === "bili") S.biliUrl = el.value;
-  if (el.id === "direct-url") S.directUrl = el.value;
-  if (el.id === "direct-title") S.directTitle = el.value;
-  else if (el.dataset.act === "vol") {
+  if (el.classList?.contains("rename-input")) {
+    if (S.renaming) S.renaming.draft = el.value;
+  } else if (el.dataset.act === "vol") {
     markSlider();
     const v = Number(el.value) / 100;
     S.status.volume = v;
@@ -1154,6 +1158,18 @@ document.addEventListener("input", (ev) => {
     const label = document.querySelector("[data-master]");
     if (label) label.textContent = `${Math.round(v * 100)}%`;
     queueMasterVolume(v);
+  }
+});
+// 编辑歌名时回车保存、Esc 取消；不借助跨源 iframe 中可能被阻止的 prompt。
+document.addEventListener("keydown", (ev) => {
+  if (!ev.target.classList?.contains("rename-input")) return;
+  if (ev.key === "Enter") {
+    ev.preventDefault();
+    saveRename();
+  } else if (ev.key === "Escape") {
+    ev.preventDefault();
+    S.renaming = null;
+    render(true);
   }
 });
 

@@ -202,14 +202,22 @@ export function applyCommand(state, cmd, now = Date.now()) {
     case "track.update": {
       const t = s.playlist.find((x) => x.id === String(cmd.trackId));
       if (!t) throw new Error("曲目不存在");
-      freeze();
+      // 只编辑描述性 Metadata，不动播放序列号/锚点/时间位置。
+      // 否则播到一半改名，会让其他设备误判为重新开始播放。
       for (const key of ["title", "artist", "cover", "duration"]) {
         if (cmd.patch && cmd.patch[key] !== undefined) {
-          t[key] = typeof cmd.patch[key] === "string"
-            ? cmd.patch[key].slice(0, key === "title" ? 120 : 200) : cmd.patch[key];
+          if (key === "title") {
+            if (typeof cmd.patch.title !== "string") throw new Error("歌曲名称必须是文本");
+            const title = cmd.patch.title.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+            if (!title || title.length > 120) throw new Error("歌曲名称不能为空或超过 120 字符");
+            t.title = title;
+          } else {
+            t[key] = typeof cmd.patch[key] === "string"
+              ? cmd.patch[key].slice(0, 200) : cmd.patch[key];
+          }
         }
       }
-      bump();
+      s.rev++;
       break;
     }
     case "folder": {
