@@ -136,6 +136,49 @@ test("PLAYER 初次连接的 WebSocket onopen 不能覆盖未完成的歌单扫�
   } finally { relay.close(); }
 });
 
+test("大歌单后续文件仍在核验时，当前和下一首已立即发出分块下载请求", async () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  let releaseThird;
+  const holdThird = new Promise((resolve) => { releaseThird = resolve; });
+  const hashes = ["1".repeat(64), "2".repeat(64), "3".repeat(64), "4".repeat(64)];
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { storage: {
+      getDirectory: async () => ({
+        getDirectoryHandle: async () => ({
+          getFileHandle: async (hash) => {
+            if (hash === hashes[3]) await holdThird;
+            throw new Error("本机未缓存");
+          },
+        }),
+      }),
+    } },
+  });
+  const relay = new RelayClient("priority-room", "b".repeat(32));
+  const outbound = [];
+  relay.ws = { readyState: FakeWebSocket.OPEN,
+    send: (message) => outbound.push(JSON.parse(message)),
+    close: () => {} };
+  try {
+    const scan = relay.updateTracks(hashes.map((hash, index) =>
+      ({ id: String(index), hash, title: String(index), size: 128 })), "1");
+    for (let i = 0; i < 20 && outbound.filter((m) => m.t === "need").length < 2; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.deepEqual(outbound.filter((m) => m.t === "need").map((m) => m.hash),
+      [hashes[1], hashes[2]], "当前（索引1）与下一首（索引2）应抢在历史曲目之前");
+    assert.equal(relay.tracks.length, 2, "全量审计还没完成，但优先批次已开始下载");
+    releaseThird();
+    await scan;
+    assert.equal(relay.tracks.length, 4);
+  } finally {
+    releaseThird();
+    relay.close();
+    if (previous) Object.defineProperty(globalThis, "navigator", previous);
+    else delete globalThis.navigator;
+  }
+});
+
 test("来源缺失广播只提醒：不能改歌单；找到新来源会同步清除房主告警", async () => {
   let state = createState("9".repeat(32));
   state = addTrack(state, { title: "告警曲", hash: "7".repeat(64), size: 25 });
@@ -188,7 +231,7 @@ test("重命名只改 Metadata，不改变音频哈希、播放序号和原有�
   } finally { cleanup(bridge); }
 });
 
-test("单曲补传必须匹配原始哈希，不增加重复歌单项目且不能阻断其他歌曲", async () => {
+test("原版一致自动补传；SHA-256 不匹配先警告，只有确认后安全替换版本", async () => {
   const bytes = Buffer.from("this is one full original audio");
   const hash = sha(bytes);
   let state = createState("e".repeat(32));
@@ -199,8 +242,17 @@ test("单曲补传必须匹配原始哈希，不增加重复歌单项目且不�
     await bridge.start();
     await bridge.relay.updateTracks(state.playlist);
     const before = structuredClone(bridge.state);
-    await assert.rejects(() => bridge.repairTrack(state.playlist[0].id,
-      new Blob([Buffer.from("x".repeat(bytes.length))])), /SHA-256 不匹配/);
+    const replacement = new Blob([Buffer.from("x".repeat(bytes.length))]);
+    const warning = await bridge.repairTrack(state.playlist[0].id, replacement);
+    assert.equal(warning.needsConfirmation, true);
+    assert.equal(warning.newHash, sha(Buffer.from("x".repeat(bytes.length))));
+    assert.equal(bridge.state.playlist[0].hash, hash, "警告阶段不能偷偷改歌单");
+    assert.equal(bridge.state.rev, before.rev, "警告阶段不写 Metadata");
+    await assert.rejects(() => bridge.repairTrack(state.playlist[0].id, replacement, {
+      confirmVersionChange: true, expectedOldHash: "0".repeat(64),
+      approvedNewHash: warning.newHash,
+    }), /版本.*变化/);
+    assert.equal(bridge.state.playlist[0].hash, hash);
     assert.equal(bridge.state.playlist.length, 2);
     const repaired = await bridge.repairTrack(state.playlist[0].id, new Blob([bytes]));
     assert.ok(["opfs", "indexeddb", "memory"].includes(repaired.savedTo));
@@ -209,6 +261,21 @@ test("单曲补传必须匹配原始哈希，不增加重复歌单项目且不�
     assert.equal(bridge.audioHealth.localMissing.includes(hash), false);
     assert.equal(bridge.audioHealth.localMissing.includes("f".repeat(64)), true);
     assert.ok(messages.some((msg) => msg.t === "audio-available" && msg.hash === hash));
+    const originalPlayback = structuredClone(bridge.state.playback);
+    const overridden = await bridge.repairTrack(state.playlist[0].id, replacement, {
+      confirmVersionChange: true,
+      expectedOldHash: warning.oldHash,
+      approvedNewHash: warning.newHash,
+      duration: 13,
+    });
+    assert.equal(overridden.changedVersion, true);
+    assert.equal(bridge.state.playlist[0].hash, warning.newHash);
+    assert.equal(bridge.state.playlist[0].size, replacement.size);
+    assert.equal(bridge.state.playlist[0].duration, 13);
+    assert.deepEqual(bridge.state.playback, originalPlayback);
+    assert.equal(bridge.state.playlist.length, 2, "替换版本不能新建重复歌");
+    assert.equal(bridge.state.playlist[1].hash, "f".repeat(64), "其他歌曲必须保持不变");
+    assert.ok(messages.some((msg) => msg.t === "audio-available" && msg.hash === warning.newHash));
   } finally { cleanup(bridge); }
 });
 

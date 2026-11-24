@@ -447,8 +447,9 @@ function askConfirm(text, cmd, action = "") {
 
 function askHtml() {
   if (!S.ask) return "";
+  const confirmingVersion = S.ask.action === "repair-version";
   return `<div class="ask"><div class="ask-text">${esc(S.ask.text)}</div>
-    <div class="ask-btns"><button class="btn" data-act="ask-yes">确定</button><button class="btn ghost" data-act="ask-no">取消</button></div></div>`;
+    <div class="ask-btns"><button class="btn ${confirmingVersion ? "primary" : ""}" data-act="ask-yes">${confirmingVersion ? "确认替换版本" : "确定"}</button><button class="btn ghost" data-act="ask-no">取消</button></div></div>`;
 }
 
 function newFolderHtml() {
@@ -990,15 +991,31 @@ async function doImportBackup(file) {
   }
 }
 
-async function doRepair(file, trackId = S.repairId) {
+async function doRepair(file, trackId = S.repairId, options = {}) {
   if (!file || !trackId || !window.__cloudBridge || S.busy) return;
   S.busy = "repair";
   render(true);
   try {
-    const { title, savedTo } = await window.__cloudBridge.repairTrack(trackId, file);
+    const duration = options.confirmVersionChange
+      ? await mediaDuration(file).catch(() => 0) : 0;
+    const result = await window.__cloudBridge.repairTrack(trackId, file, { ...options, duration });
+    if (result.needsConfirmation && !result.changedVersion) {
+      askConfirm(
+        `警告：《${result.title}》的 SHA-256 校验结果与歌单记录不匹配（原 ${result.oldHash.slice(0, 12)}…，新 ${result.newHash.slice(0, 12)}…）。您确定上传的是同一个版本的音频吗？如果是重新录制或导出的版本，可以继续，但这会更新房间歌单中的音频引用，正在播放的曲目可能重新加载。`,
+        null, "repair-version"
+      );
+      S.ask.repair = {
+        file, trackId, expectedOldHash: result.oldHash,
+        approvedNewHash: result.newHash,
+      };
+      return;
+    }
+    const { title, savedTo, changedVersion } = result;
     toast(savedTo === "memory"
-      ? `《${title}》已临时补回，但当前浏览器仅允许内存缓存，刷新后可能丢失`
-      : `《${title}》原文件校验通过并已补传，房间其他设备可按需获取`,
+      ? `《${title}》已补入内存，但刷新页面后可能丢失`
+      : changedVersion
+        ? `《${title}》已替换为新音频版本，并同步更新房间歌单引用`
+        : `《${title}》原文件已补传，其他设备可按需获取`,
     savedTo === "memory" ? "warn" : "info", 8000);
     await refreshState();
   } catch (error) {
@@ -1082,6 +1099,10 @@ document.addEventListener("click", (ev) => {
     S.ask = null;
     render(true);
     if (pending?.action === "release") release();
+    else if (pending?.action === "repair-version" && pending.repair) {
+      const { file, trackId, expectedOldHash, approvedNewHash } = pending.repair;
+      doRepair(file, trackId, { confirmVersionChange: true, expectedOldHash, approvedNewHash });
+    }
     else if (pending?.cmd) command(pending.cmd);
     return;
   } else if (act === "ask-no") {

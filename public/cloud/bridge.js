@@ -561,24 +561,58 @@ export class CloudBridge {
     return result;
   }
 
-  /** 已在 Metadata 中登记的曲目，仅补回与其 SHA256 完全一致的原文件。
-   * 不添加重复曲目、不修改标题、播放序列或时间锚点。
+  /**
+   * 原文件补传分两步：
+   * - 哈希一致：直接补齐，不修改 Metadata。
+   * - 哈希不同：只返回风险信息，要求用户再次确认后才替换版本。
+   * 绝不能把新文件写到旧 SHA-256 对应的 OPFS 键中。
    */
-  async repairTrack(trackId, file) {
+  async inspectRepairTrack(trackId, file) {
     if (!await this.isGM()) throw new Error("只有房主能补传歌曲原文件");
     await this.refresh();
     const track = this.state?.playlist.find((item) => item.id === trackId);
     if (!track) throw new Error("待补传的歌曲已不在房间歌单");
-    if (!file?.size || file.size !== track.size || file.size > MAX_AUDIO_SIZE) {
-      throw new Error(`《${track.title}》文件大小不匹配，必须选择原始音频文件`);
+    if (!file?.size || file.size > MAX_AUDIO_SIZE) {
+      throw new Error("音频文件应大于 0 且不能超过 64 MiB");
     }
-    if ((await digest(file)) !== track.hash) {
-      throw new Error(`《${track.title}》文件内容 SHA-256 不匹配，未覆盖原歌曲`);
+    const newHash = await digest(file);
+    return {
+      trackId, title: track.title, oldHash: track.hash, newHash,
+      oldSize: track.size, newSize: file.size,
+      needsConfirmation: newHash !== track.hash || file.size !== track.size,
+    };
+  }
+
+  async repairTrack(trackId, file, {
+    confirmVersionChange = false, expectedOldHash = "", approvedNewHash = "",
+    duration = 0,
+  } = {}) {
+    const preview = await this.inspectRepairTrack(trackId, file);
+    if (preview.needsConfirmation && !confirmVersionChange) {
+      return preview; // 只提示，不拒绝，也不写入音频或 Metadata
     }
-    const savedTo = await putAudio(track.hash, file);
+    if (preview.needsConfirmation &&
+        (preview.oldHash !== expectedOldHash || preview.newHash !== approvedNewHash)) {
+      throw new Error("歌单中的音频版本或待上传文件已发生变化，请重新选择并确认");
+    }
+    const savedTo = await putAudio(preview.newHash, file);
     await requestPersistence();
-    await this.relay?.announce(track.hash);
-    return { title: track.title, savedTo };
+    if (preview.needsConfirmation) {
+      await this.change((state) => {
+        const track = state.playlist.find((item) => item.id === trackId);
+        if (!track || track.hash !== preview.oldHash) {
+          throw new Error("歌曲已被其他操作修改，不能覆盖，请重新选择文件");
+        }
+        track.hash = preview.newHash;
+        track.size = preview.newSize;
+        if (file.type?.startsWith("audio/")) track.mime = file.type;
+        if (Number.isFinite(duration) && duration > 0) track.duration = duration;
+        state.rev++;
+        return state;
+      }, { metadataOnly: true });
+    }
+    await this.relay?.announce(preview.newHash);
+    return { ...preview, savedTo, changedVersion: preview.needsConfirmation };
   }
 
   /** GM 手动保存真正可离线恢复的 ZIP，不依赖浏览器缓存或 Cloudflare 存歌。 */

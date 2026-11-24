@@ -181,11 +181,37 @@ export class RelayClient {
     );
     const owned = new Set();
     const missing = new Map();
-    for (const t of ordered) {
+    // 初次入房时应先完成「当前曲 + 下一首」的本地核验并立即请求缺失
+    // 音频，不必等待很长歌单中所有旧歌曲的 SHA-256 都扫描完毕。
+    for (const t of ordered.slice(0, MAX_SIMULTANEOUS_DOWNLOADS)) {
       if (owned.has(t.hash) || missing.has(t.hash)) continue;
       const result = await verifyCachedAudio(t, getAudio, digest);
       if (result.valid) owned.add(t.hash);
       else missing.set(t.hash, result.reason);
+    }
+    if (this.stopped || generation !== this.updateGeneration) return;
+    if (ordered.length > MAX_SIMULTANEOUS_DOWNLOADS) {
+      this.tracks = ordered.slice(0, MAX_SIMULTANEOUS_DOWNLOADS);
+      this.owned = new Set(owned);
+      this.send({ t: "have", hashes: [...this.owned] });
+      this.pumpRequests();
+    }
+    for (const t of ordered.slice(MAX_SIMULTANEOUS_DOWNLOADS)) {
+      if (this.stopped || generation !== this.updateGeneration) return;
+      if (owned.has(t.hash) || missing.has(t.hash)) continue;
+      const result = await verifyCachedAudio(t, getAudio, digest);
+      if (result.valid) owned.add(t.hash);
+      else missing.set(t.hash, result.reason);
+    }
+    // 首批请求可能已在漫长的余下歌单巡检期间完成。
+    // 保留传输期间新取得且已验证的文件，不能用巡检开始时的旧 owned 覆盖。
+    for (const hash of this.owned) {
+      if (owned.has(hash)) continue;
+      const track = ordered.find((item) => item.hash === hash);
+      if (track && (await verifyCachedAudio(track, getAudio, digest)).valid) {
+        owned.add(hash);
+        missing.delete(hash);
+      }
     }
     // 多次 onMetadataChange 可能并行扫描 OPFS。过期异步结果绝不可
     // 把刚加入歌单的歌曲、目前优先的歌曲顺序覆盖回旧状态。
