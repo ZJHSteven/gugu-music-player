@@ -6,6 +6,7 @@ import { makeDiagnosticReport } from "./cloud/diagnostics.js";
 import { anonymousRoomCode } from "./cloud/metadata-inspection.js";
 import { shouldRetryOwlbear, resetOwlbearRetries } from "./obr-identity.js";
 import { IosSyncAudio } from "./cloud/ios-sync-audio.js";
+import { describeLocalAudio } from "./cloud/source-health.js";
 import { fitMobilePopover, jumpScroll, installIosTouchScroll } from "./cloud/mobile-popover.js";
 
 window.__appBuild = "build-folders-1";
@@ -23,6 +24,10 @@ const ICON = {
   upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4.5"/><path d="M7.5 9 12 4.5 16.5 9"/><path d="M4 16.5v2A2.5 2.5 0 0 0 6.5 21h11a2.5 2.5 0 0 0 2.5-2.5v-2"/></svg>',
   volume: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5.5 6.8 9H3.5v6h3.3l4.2 3.5z"/><path d="M15.5 8.7a4.7 4.7 0 0 1 0 6.6"/><path d="M18.2 6a8.4 8.4 0 0 1 0 12"/></svg>',
   alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.8v5"/><path d="M12 16.2v.01"/></svg>',
+  pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m4.5 16.5-.8 3.8 3.8-.8L19 8a2.1 2.1 0 0 0-3-3L4.5 16.5Z"/><path d="m13.8 7.2 3 3"/></svg>',
+  grip: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="5" r="1.6"/><circle cx="15" cy="5" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="19" r="1.6"/><circle cx="15" cy="19" r="1.6"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></svg>',
+  close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 5 19 19M19 5 5 19"/></svg>',
 };
 
 const esc = (s) =>
@@ -57,6 +62,8 @@ const S = {
   claimError: "",
   biliUrl: "",
   renaming: null, // 正在编辑的曲目名：{ id, draft }；只变更 Metadata，不改音频哈希
+  folderDraft: "",
+  sortDrag: null, // 拖动把手时保存歌曲ID；排序指令最终只写一次
   playerSettingsOpen: false,
   drag: null,
   folderTab: "__all",
@@ -122,7 +129,8 @@ window.addEventListener("pagehide", () => iosFollower?.close());
 function render(force) {
   // 正在拖滑块时绝不重建 DOM：否则 <input> 会被销毁替换，浏览器直接丢掉拖拽，
   // 表现就是"拖不动/一跳一跳"。松手后由 markSlider 的定时器统一补一次渲染。
-  if (S.sliderActive) return;
+  if (S.sliderActive || S.sortDrag?.active) return;
+  if (!force && document.activeElement?.matches?.(".folder-input, .rename-input")) return updateLive();
   if (queued && !force) return;
   queued = true;
   // Owlbear 的 popover iframe 在用户尚未展开面板时通常处于 hidden。
@@ -149,7 +157,7 @@ function render(force) {
       claim: S.claimError,
       // 手机背景引擎的缓冲、drift 频繁变化，不应每次重建iOS播放按钮。
       blocked: iosAudio ? null : S.status.blocked,
-      buffering: iosAudio ? null : Boolean(S.status.buffering),
+      // 缓冲标识可能毫秒级跳变，不为此拆装整个歌单。
       connected: S.status.connected,
       hasToken: S.status.hasToken,
       hide: S.state?.settings?.hideTitle,
@@ -161,7 +169,10 @@ function render(force) {
       folders: (S.state?.folders || []).join("|"),
       fmap: (S.state?.playlist || []).map((t) => t.folder || "").join("|"),
       renamingId: S.renaming?.id || "",
-      audioHealth: S.audioHealth ? JSON.stringify(S.audioHealth) : "",
+      creatingFolder: S.creatingFolder,
+      folderDraft: S.creatingFolder ? S.folderDraft : "",
+      // 瞬时 checking 不影响列表的视觉结构，避免每次扫描起止都重绘。
+      audioHealth: S.audioHealth ? JSON.stringify({ ...S.audioHealth, checking: false }) : "",
       restoreReport: S.restoreReport,
       playerSettingsOpen: S.playerSettingsOpen,
       diagnosticsOpen: S.diagnosticsOpen,
@@ -334,19 +345,26 @@ function noticeHtml() {
   if (health?.metadataError) problems.push(health.metadataError);
   if (health?.transferError) problems.push(health.transferError);
   if (S.role === "GM" && health?.localMissing?.length) {
-    const count = (S.state?.playlist || []).filter((track) =>
-      health.localMissing.includes(track.hash)).length;
-    problems.push(`本机有 ${count} 首歌曲缺少有效原文件，请在歌单中逐首补传；其他歌曲仍可正常播放。`);
+    // 本机尚未缓存 ≠ 房间没有原文件。同一账号的电脑/手机是独立音源节点。
+    const offline = health.localMissing.filter((hash) =>
+      (health.unavailable || []).includes(hash)).length;
+    if (offline) {
+      problems.push(`本机有 ${offline} 首歌曲暂时找不到在线音源。请让存有文件的电脑或其他 GM 设备同时在线，将自动同步；也可手动补传。`);
+    }
+  }
+  if (S.role === "GM" && health?.corrupt?.length) {
+    problems.push(`本机有 ${health.corrupt.length} 份缓存校验异常，正等待可靠来源或手动补传。`);
   }
   if (S.role === "GM" && health?.remoteMissing?.length) {
-    problems.push(`有房间成员报告 ${health.remoteMissing.length} 首歌曲当前无法找到在线音源，请检查并补传。`);
+    problems.push(`有房间成员报告 ${health.remoteMissing.length} 首歌曲暂时没有在线音源；文件可能仍保存在离线设备中。`);
   }
   if (S.role !== "GM" && S.now?.track?.hash &&
       health?.unavailable?.includes(S.now.track.hash)) {
     problems.push("当前歌曲暂无在线原文件，已通知房主；其他歌曲不受影响。");
   }
+  const severity = health?.metadataError || health?.corrupt?.length ? "err" : "warn";
   const persistent = problems.length
-    ? `<div class="notice err">${icon("alert")}<span>${esc(problems.join(" "))}</span></div>`
+    ? `<div class="notice ${severity}">${icon("alert")}<span>${esc(problems.join(" "))}</span></div>`
     : "";
   if (S.notice) {
     return persistent + `<div class="notice ${S.notice.kind || ""}">${S.notice.kind === "err" ? icon("alert") : ""}<span>${esc(
@@ -383,9 +401,7 @@ function nowCard(seekable) {
     ${cover ? `<div class="art" style="background-image:url('${cover}')"></div>` : ""}
     <div class="now-body">
       <div class="label">${
-        S.status.buffering && S.now.playback.playing
-          ? '<span class="pulse"></span>缓冲中…'
-          : S.now.playback.playing
+        S.now.playback.playing
           ? '<span class="pulse"></span>正在播放'
           : "已暂停"
       }</div>
@@ -471,12 +487,6 @@ function askHtml() {
     <div class="ask-btns"><button class="btn ${confirmingVersion ? "primary" : ""}" data-act="ask-yes">${confirmingVersion ? "确认替换版本" : "确定"}</button><button class="btn ghost" data-act="ask-no">取消</button></div></div>`;
 }
 
-function newFolderHtml() {
-  if (!S.creatingFolder) return "";
-  return `<div class="chips"><input class="folder-input" maxlength="24" placeholder="新分类名字，比如 城镇 / 恐怖 / 休整" />
-    <button class="chip active" data-act="folder-create-ok">确定</button>
-    <button class="chip" data-act="folder-create-cancel">取消</button></div>`;
-}
 function folderBar() {
   const folders = S.state?.folders || [];
   const tab = S.folderTab || "__all";
@@ -491,9 +501,21 @@ function folderBar() {
     ),
   ];
   if (uncategorized || !folders.length) chips.push(chip("__none", "未分类"));
-  chips.push(`<button class="chip chip-add" data-act="folder-new" title="新建分类">＋</button>`);
-
-  return `<div class="chips">${chips.join("")}</div>` + newFolderHtml();
+  // 加号始终位于同一枚胶囊中。展开时原位置直接长出输入框，
+  // 右侧动作键由 + 变为 ×（空白取消）或 ✓（输入有效时保存）。
+  // 不再往歌单下方额外插入一整行表单。
+  const named = Boolean(S.folderDraft.trim());
+  const action = S.creatingFolder ? (named ? "folder-create-ok" : "folder-create-cancel") : "folder-new";
+  chips.push(`<div class="folder-create ${S.creatingFolder ? "expanded" : ""}">
+    <input class="folder-input" aria-label="新分类名称" maxlength="24"
+      placeholder="新分类名称" value="${esc(S.folderDraft)}"
+      tabindex="${S.creatingFolder ? 0 : -1}" />
+    <button class="chip chip-add folder-create-action ${named ? "has-text" : ""}"
+      data-act="${action}" title="${S.creatingFolder ? (named ? "保存分类" : "取消创建") : "新建分类"}"
+      aria-label="${S.creatingFolder ? (named ? "保存分类" : "取消创建") : "新建分类"}">
+      ${S.creatingFolder ? icon(named ? "check" : "close") : '<span class="folder-plus">＋</span>'}
+    </button></div>`);
+  return `<div class="chips">${chips.join("")}</div>`;
 }
 
 function listView(list) {
@@ -504,8 +526,8 @@ function listView(list) {
   const shown = tab === "__all" ? list : list.filter((t) => (t.folder || "") === target);
 
   const bar = folderBar();
-  const auditing = window.BARD_CLOUD && S.audioHealth?.checking
-    ? '<div class="notice"><span>正在逐首核对本机的音频原文件…</span></div>' : "";
+  // 瞬时音频扫描不再往歌单上方插入/删除整行横幅，避免跳动。
+  const auditing = "";
   if (!list.length) {
     return `${bar}${auditing}<div class="empty">${icon("music")}<div>还没有曲目</div><div>${window.BARD_CLOUD ? "切到「添加」，上传本地音频文件" : "切到「添加」，放本地文件或粘贴 B 站链接"}</div></div>`;
   }
@@ -519,6 +541,7 @@ function listView(list) {
     .map((t, i) => {
       const on = t.id === cur;
       const open = S.openFolderFor === t.id;
+      const editing = S.renaming?.id === t.id;
 
       // 展开的「移到分类」菜单：用按钮而不是原生下拉，点得准、触屏也能用
       const menu = open
@@ -530,13 +553,22 @@ function listView(list) {
             .join("")}<button class="chip chip-add" data-act="folder-new">＋</button></div>`
         : "";
 
-      const absent = window.BARD_CLOUD && missing.has(t.hash);
-      return `<div class="row ${on ? "playing" : ""}" data-repair-id="${esc(t.id)}">
+      const source = window.BARD_CLOUD ? describeLocalAudio(t.hash, S.audioHealth) : null;
+      const absent = Boolean(source);
+      return `<div class="row ${on ? "playing" : ""}" data-track-id="${esc(t.id)}"
+        data-repair-id="${esc(t.id)}">
+      <button class="icon-btn sort-handle" data-act="sort-handle" data-id="${esc(t.id)}"
+        title="拖动排序（键盘可用上下方向键）" aria-label="调整《${esc(t.title)}》的歌单顺序">
+        ${icon("grip")}</button>
       <span class="idx">${on ? "▶" : i + 1}</span>
-      <div class="row-main" data-act="pick" data-id="${esc(t.id)}">
-        <div class="row-title">${esc(t.title || "未命名")}</div>
+      <div class="row-main" ${editing ? "" : `data-act="pick" data-id="${esc(t.id)}"`}>
+        ${editing
+          ? `<input class="input rename-input" maxlength="120"
+              aria-label="编辑《${esc(t.title)}》的歌曲名称"
+              value="${esc(S.renaming.draft)}" placeholder="歌曲名称" />`
+          : `<div class="row-title">${esc(t.title || "未命名")}</div>`}
         <div class="row-sub"><span class="tag ${t.kind}">${t.kind === "bilibili" ? "B站" : t.kind === "url" ? "直链" : "本地"}</span>
-          ${absent ? '<span class="tag missing-file">原文件缺失</span>' : ""}
+          ${source ? `<span class="tag audio-source ${source.status}">${esc(source.label)}</span>` : ""}
           <span>${esc(t.artist || "")}</span>${
             t.folder ? `<span class="tag folder-tag">${esc(t.folder)}</span>` : ""
           }${t.duration > 0 ? `<span>${fmt(t.duration)}</span>` : ""}</div>
@@ -544,15 +576,16 @@ function listView(list) {
       <button class="icon-btn folder-btn ${open ? "active" : ""}" data-act="row-folder" data-id="${esc(t.id)}" title="移到分类">${icon(
         "folder"
       )}</button>
-      ${window.BARD_CLOUD ? `<button class="icon-btn rename-btn" data-act="rename" data-id="${esc(t.id)}" title="重命名歌曲" aria-label="重命名：${esc(t.title)}">✎</button>` : ""}
-      ${absent ? `<button class="icon-btn repair-btn" data-act="repair" data-id="${esc(t.id)}" title="为这首歌曲补传相同原文件" aria-label="补传：${esc(t.title)}">${icon("upload")}</button>` : ""}
-      <button class="icon-btn" data-act="remove" data-id="${esc(t.id)}">${icon("trash")}</button>
-    </div>${S.renaming?.id === t.id
-        ? `<div class="rename-editor"><input class="input rename-input" maxlength="120" aria-label="新歌曲名称"
-             value="${esc(S.renaming.draft)}" placeholder="输入新的歌曲名称" />
-             <button class="btn primary" data-act="rename-save">保存</button>
-             <button class="btn" data-act="rename-cancel">取消</button></div>`
-        : ""}${menu}`;
+      ${window.BARD_CLOUD
+        ? `<button class="icon-btn rename-btn" data-act="${editing ? "rename-save" : "rename"}"
+            data-id="${esc(t.id)}" title="${editing ? "保存歌名" : "重命名歌曲"}"
+            aria-label="${editing ? "保存" : "重命名"}：${esc(t.title)}">
+            ${icon(editing ? "check" : "pencil")}</button>` : ""}
+      ${absent ? `<button class="icon-btn repair-btn" data-act="repair" data-id="${esc(t.id)}" title="手动补传原文件或确认替换版本" aria-label="补传：${esc(t.title)}">${icon("upload")}</button>` : ""}
+      <button class="icon-btn" data-act="${editing ? "rename-cancel" : "remove"}" data-id="${esc(t.id)}"
+        title="${editing ? "取消修改" : "删除歌曲"}">
+        ${icon(editing ? "close" : "trash")}</button>
+    </div>${menu}`;
     })
     .join("");
 
@@ -805,6 +838,16 @@ async function moveTrackTo(trackId, folder) {
  * 音频字节仍按原 SHA-256 存在 OPFS，不重新上传、不改变房间播放位置。
  * 使用内嵌编辑框而非 window.prompt，兼容 Owlbear iframe 和手机浏览器。
  */
+async function movePlaylistTrack(trackId, targetId) {
+  const playlist = S.state?.playlist || [];
+  const from = playlist.findIndex((t) => t.id === trackId);
+  const to = playlist.findIndex((t) => t.id === targetId);
+  if (from < 0 || to < 0 || from === to) return;
+  if (!token()) return toast("只有房主能调整歌单顺序", "warn");
+  // playlist.move 为纯 Metadata 修改，不重置当前播放的 seq/anchor。
+  await command({ type: "playlist", op: "move", from, to });
+}
+
 async function saveRename() {
   const editing = S.renaming;
   if (!editing) return;
@@ -1097,6 +1140,8 @@ document.addEventListener("click", (ev) => {
       input?.select();
     }, 40);
     return;
+  } else if (act === "sort-handle") {
+    return;
   } else if (act === "rename-save") {
     saveRename();
     return;
@@ -1141,10 +1186,9 @@ document.addEventListener("click", (ev) => {
     render(true);
     return;
   } else if (act === "folder-create-ok") {
-    // 必须先读值再重绘：重绘会换掉输入框元素，值就丢了
-    const input = document.querySelector(".folder-input");
-    const name = (input?.value || "").trim().slice(0, 24);
+    const name = (document.querySelector(".folder-create .folder-input")?.value || S.folderDraft).trim().slice(0, 24);
     S.creatingFolder = false;
+    S.folderDraft = "";
     if (!name) {
       render(true);
       return;
@@ -1155,6 +1199,7 @@ document.addEventListener("click", (ev) => {
     return;
   } else if (act === "folder-create-cancel") {
     S.creatingFolder = false;
+    S.folderDraft = "";
     render(true);
     return;
   } else if (act === "row-folder") {
@@ -1168,6 +1213,7 @@ document.addEventListener("click", (ev) => {
     return;
   } else if (act === "folder-new") {
     S.creatingFolder = true;
+    S.folderDraft = "";
     render(true);
     setTimeout(() => document.querySelector(".folder-input")?.focus(), 50);
     return;
@@ -1235,6 +1281,21 @@ document.addEventListener(
   },
   true
 );
+// 排序仅从左侧把手开始，避免误触歌曲名称导致切歌。
+document.addEventListener("pointerdown", (ev) => {
+  const handle = ev.target.closest?.(".sort-handle");
+  if (!handle || ev.button > 0 || S.role !== "GM") return;
+  const row = handle.closest(".row[data-track-id]");
+  if (!row) return;
+  ev.preventDefault(); ev.stopPropagation();
+  S.sortDrag = { active: true, pointerId: ev.pointerId,
+    trackId: row.dataset.trackId, row,
+    startY: ev.clientY, moved: false,
+    oldOrder: [...document.querySelectorAll(".row[data-track-id]")]
+      .map((node) => node.dataset.trackId) };
+  row.classList.add("sort-dragging");
+  try { handle.setPointerCapture(ev.pointerId); } catch {}
+});
 document.addEventListener("pointerdown", (ev) => {
   const host = ev.target.closest('[data-act="seek"]');
   if (!host) return;
@@ -1251,10 +1312,40 @@ document.addEventListener("pointerdown", (ev) => {
 });
 
 document.addEventListener("pointermove", (ev) => {
+  const d = S.sortDrag;
+  if (d?.active && ev.pointerId === d.pointerId) {
+    if (Math.abs(ev.clientY - d.startY) > 5) d.moved = true;
+    if (!d.moved) return;
+    const area = document.getElementById("view");
+    const bounds = area?.getBoundingClientRect();
+    if (bounds && ev.clientY < bounds.top + 32) area.scrollTop -= 12;
+    else if (bounds && ev.clientY > bounds.bottom - 32) area.scrollTop += 12;
+    const target = document.elementFromPoint(ev.clientX, ev.clientY)
+      ?.closest?.(".row[data-track-id]");
+    if (target && target !== d.row && target.parentElement === d.row.parentElement) {
+      const after = ev.clientY >= target.getBoundingClientRect().top +
+        target.getBoundingClientRect().height / 2;
+      target.parentElement.insertBefore(d.row, after ? target.nextSibling : target);
+    }
+    ev.preventDefault();
+    return;
+  }
   if (S.drag) applyDrag(ev);
 });
 
 document.addEventListener("pointerup", (ev) => {
+  if (S.sortDrag?.active && ev.pointerId === S.sortDrag.pointerId) {
+    const d = S.sortDrag;
+    S.sortDrag = null;
+    d.row.classList.remove("sort-dragging");
+    const index = [...document.querySelectorAll(".row[data-track-id]")]
+      .findIndex((node) => node.dataset.trackId === d.trackId);
+    const targetId = d.oldOrder[index];
+    if (d.moved && targetId && targetId !== d.trackId) {
+      movePlaylistTrack(d.trackId, targetId);
+    } else render(true);
+    return;
+  }
   if (!S.drag) return;
   const target = dragTimeFrom(ev);
   S.drag = null;
@@ -1263,6 +1354,7 @@ document.addEventListener("pointerup", (ev) => {
 
 document.addEventListener("pointercancel", () => {
   S.drag = null;
+  if (S.sortDrag) { S.sortDrag = null; render(true); }
 });
 
 /** 松手后：界面先跳到目标位置（不等服务器），再发命令并让引擎立刻刷新。 */
@@ -1280,6 +1372,18 @@ async function seekTo(seconds) {
 document.addEventListener("input", (ev) => {
   const el = ev.target;
   if (el.id === "bili") S.biliUrl = el.value;
+  if (el.classList?.contains("folder-input") && S.creatingFolder) {
+    S.folderDraft = el.value;
+    const named = Boolean(el.value.trim());
+    const button = el.closest(".folder-create")?.querySelector(".folder-create-action");
+    if (button) {
+      button.dataset.act = named ? "folder-create-ok" : "folder-create-cancel";
+      button.title = named ? "保存分类" : "取消创建";
+      button.setAttribute("aria-label", button.title);
+      button.classList.toggle("has-text", named);
+      button.innerHTML = icon(named ? "check" : "close");
+    }
+  }
   if (el.classList?.contains("rename-input")) {
     if (S.renaming) S.renaming.draft = el.value;
   } else if (el.dataset.act === "vol") {
@@ -1299,6 +1403,25 @@ document.addEventListener("input", (ev) => {
 });
 // 编辑歌名时回车保存、Esc 取消；不借助跨源 iframe 中可能被阻止的 prompt。
 document.addEventListener("keydown", (ev) => {
+  if (ev.target.classList?.contains("folder-input") && S.creatingFolder) {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      document.querySelector(".folder-create-action")?.click();
+    } else if (ev.key === "Escape") {
+      ev.preventDefault();
+      S.creatingFolder = false; S.folderDraft = ""; render(true);
+    }
+    return;
+  }
+  if (ev.target.closest?.(".sort-handle") && (ev.key === "ArrowDown" || ev.key === "ArrowUp")) {
+    ev.preventDefault();
+    const current = ev.target.closest(".row[data-track-id]");
+    const rows = [...document.querySelectorAll(".row[data-track-id]")];
+    const index = rows.indexOf(current);
+    const next = rows[index + (ev.key === "ArrowDown" ? 1 : -1)];
+    if (current && next) movePlaylistTrack(current.dataset.trackId, next.dataset.trackId);
+    return;
+  }
   if (!ev.target.classList?.contains("rename-input")) return;
   if (ev.key === "Enter") {
     ev.preventDefault();

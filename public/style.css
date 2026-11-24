@@ -93,7 +93,9 @@ html.cloud-mode .diag-jump { display: inline-flex; }
    内容即使在宿主裁剪下也能上移。顶部翻页按钮提供非手势后备方案。 */
 @media (pointer: coarse) and (max-width: 560px) {
   .app { position: fixed; inset: 0; width: 100%; height: 100%; max-height: 100%; }
-  .main { overflow-y: scroll; padding-bottom: calc(220px + env(safe-area-inset-bottom, 0px)); }
+  /* 先让 Safari/WebKit 接管原生惯性滚动；仅当宿主阻断时才启用 JS 兜底。 */
+  .main { overflow-y: scroll; -webkit-overflow-scrolling: touch; touch-action: pan-y;
+    padding-bottom: calc(220px + env(safe-area-inset-bottom, 0px)); }
   .mobile-scroll-jump { display: inline-flex; }
 }
 
@@ -143,17 +145,28 @@ html.cloud-mode .diag-jump { display: inline-flex; }
 .tag { font-size: 9px; padding: 0 4px; border-radius: 3px; border: 1px solid var(--line); }
 .tag.bilibili { color: #f09bb3; }
 .tag.upload { color: var(--green); }
-.icon-btn { width: 24px; height: 24px; border-radius: 6px; display: grid; place-items: center; color: var(--dim2); }
+.icon-btn { box-sizing: border-box; flex: 0 0 24px; width: 24px; min-width: 24px; height: 24px;
+  padding: 0; border: 0; border-radius: 6px; display: grid; place-items: center; color: var(--dim2); }
 .icon-btn:hover { color: var(--red); background: rgba(224,108,117,0.12); }
 .icon-btn svg { width: 14px; height: 14px; }
-.rename-btn { font-size: 19px; line-height: 1; }
+.icon-btn > span { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; }
 .rename-btn:hover { color: var(--gold); background: var(--gold-soft); }
 .tag.missing-file { background: rgba(224,108,117,0.17); border-color: var(--red); color: #ff939e; border-radius: 999px; padding: 1px 6px; font-weight: 600; }
+.tag.audio-source { border-radius: 999px; padding: 1px 6px; font-weight: 600; }
+.tag.audio-source.pending { color: #adb8cc; border-color: rgba(173,184,204,.3); }
+.tag.audio-source.fetching { color: #85c1f2; border-color: rgba(133,193,242,.4); background: rgba(133,193,242,.08); }
+.tag.audio-source.offline { color: #f2ce90; border-color: rgba(242,206,144,.5); background: rgba(242,206,144,.1); }
+.tag.audio-source.corrupt { color: #ff939e; border-color: var(--red); background: rgba(224,108,117,.17); }
 .repair-btn { color: var(--red); }
 .row-sub { flex-wrap: wrap; }
-.rename-editor { display: flex; align-items: center; gap: 6px; padding: 2px 8px 10px 34px; }
-.rename-editor .input { flex: 1; min-width: 0; }
-.rename-editor .btn { padding: 0 9px; }
+.rename-input { height: 26px; padding: 0 6px; width: 100%; font-size: 12.5px;
+  border-color: rgba(232,195,122,.55); animation: inline-edit-in .18s ease both; }
+@keyframes inline-edit-in { from { opacity: .5; transform: scaleX(.98); } to { opacity: 1; transform: scaleX(1); } }
+.sort-handle { color: var(--dim2); cursor: grab; touch-action: none; -webkit-user-select: none; user-select: none; }
+.sort-handle:hover { color: var(--gold); background: rgba(232,195,122,.12); }
+.sort-handle:active { cursor: grabbing; }
+.row.sort-dragging { background: rgba(232,195,122,.16); border-color: var(--gold); opacity: .82; }
+.row.sort-target { border-color: rgba(232,195,122,.3); }
 
 .empty { padding: 26px 16px; text-align: center; color: var(--dim2); font-size: 12px; line-height: 1.8; }
 .empty svg { width: 26px; height: 26px; opacity: 0.5; margin-bottom: 8px; }
@@ -242,6 +255,23 @@ input[type="range"]::-webkit-slider-thumb { appearance: none; width: 13px; heigh
   color: #f6e6bd;
 }
 .chip-add { font-weight: 600; padding: 5px 10px; }
+.folder-create { display: inline-flex; align-items: center; flex: 0 0 auto; width: 32px;
+  height: 28px; border-radius: 999px; border: 1px solid rgba(232,195,122,.25);
+  overflow: hidden; transition: width .24s cubic-bezier(.2,.8,.2,1), background .24s; }
+.folder-create.expanded { width: min(215px, 68vw); background: rgba(232,195,122,.09); }
+.folder-create .folder-input { flex: 1; min-width: 0; width: 0; padding: 0; border: none;
+  outline: none; color: var(--text); background: none; font-size: 12px;
+  opacity: 0; pointer-events: none; transition: opacity .14s ease, padding .24s ease; }
+.folder-create.expanded .folder-input { padding: 0 5px 0 11px; opacity: 1; pointer-events: auto; }
+.folder-create-action { box-sizing: border-box; flex: 0 0 30px; width: 30px;
+  min-height: 26px; padding: 0; border: none; border-radius: 999px;
+  justify-content: center; background: transparent; color: var(--gold); }
+.folder-create-action svg { width: 15px; height: 15px; }
+.folder-create .folder-plus { font-size: 17px; transition: transform .24s; }
+.folder-create.expanded .folder-create-action > span { animation: folder-icon-turn .24s ease both; }
+@keyframes folder-icon-turn { from { opacity: .4; transform: rotate(-90deg) scale(.75); }
+  to { opacity: 1; transform: rotate(0) scale(1); } }
+.folder-create-action.has-text { color: var(--green); }
 .chip-x {
   margin-left: 2px;
   opacity: 0.55;

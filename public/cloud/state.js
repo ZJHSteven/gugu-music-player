@@ -178,7 +178,8 @@ export function applyCommand(state, cmd, now = Date.now()) {
       bump();
       break;
     case "playlist": {
-      freeze();
+      // 只有清空或删除需要冻结播放；拖动排序只修改歌单元数据。
+      if (cmd.op !== "move") freeze();
       if (cmd.op === "clear") {
         s.playlist = []; p.trackId = null; p.playing = false; p.position = 0;
       } else if (cmd.op === "remove") {
@@ -194,9 +195,11 @@ export function applyCommand(state, cmd, now = Date.now()) {
         if (![from, to].every((n) => Number.isInteger(n) && n >= 0 && n < s.playlist.length)) {
           throw new Error("歌单索引越界");
         }
+        if (from === to) return state;
         const [item] = s.playlist.splice(from, 1); s.playlist.splice(to, 0, item);
       } else throw new Error("未知歌单操作");
-      bump();
+      if (cmd.op === "move") s.rev++;
+      else bump();
       break;
     }
     case "track.update": {
@@ -234,14 +237,15 @@ export function applyCommand(state, cmd, now = Date.now()) {
         s.folders = s.folders.filter((f) => f !== name);
         s.playlist.forEach((t) => { if (t.folder === name) t.folder = ""; });
       } else throw new Error("未知目录操作");
-      freeze(); bump();
+      // 分类目录仅属于 Metadata，不能暂停/重建播放时间轴。
+      s.rev++;
       break;
     }
     case "track.folder": {
       const t = s.playlist.find((x) => x.id === String(cmd.trackId));
       const folder = cleanFolder(cmd.folder);
       if (!t || (folder && !s.folders.includes(folder))) throw new Error("曲目或目录不存在");
-      freeze(); t.folder = folder; bump();
+      t.folder = folder; s.rev++;
       break;
     }
     default: throw new Error(`未知指令 ${cmd.type}`);

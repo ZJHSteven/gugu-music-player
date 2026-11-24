@@ -37,10 +37,11 @@ test("旧 Node 的 BV 入口保留兼容，但云端隐藏且不会发起 B站 A
 
 test("GM 歌单允许重命名和逐首补传，缺失原文件提示不会拦截其他歌曲", async () => {
   const app = await appSource();
-  assert.match(app, /data-act="rename"/);
+  assert.match(app, /data-act="\$\{editing \? "rename-save" : "rename"\}"/);
   assert.match(app, /data-act="repair"/);
   assert.match(app, /data-repair-id/);
-  assert.match(app, /原文件缺失/);
+  assert.match(app, /describeLocalAudio/);
+  assert.match(app, /sort-handle/);
   assert.match(app, /cloud\.onHealth\(/);
   assert.match(app, /class="btn block primary backup-download"/);
   assert.doesNotMatch(app, /房间同步不发送服务器心跳/);

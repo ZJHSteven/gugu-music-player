@@ -5,7 +5,7 @@ import { Blob } from "node:buffer";
 import { CloudBridge } from "../../public/cloud/bridge.js";
 import { createBackupArchive } from "../../public/cloud/backup.js";
 import { createState, addTrack, applyCommand } from "../../public/cloud/state.js";
-import { validatePlaylist, verifyCachedAudio } from "../../public/cloud/source-health.js";
+import { validatePlaylist, verifyCachedAudio, describeLocalAudio } from "../../public/cloud/source-health.js";
 import { RelayClient } from "../../public/cloud/relay-client.js";
 
 globalThis.crypto ??= webcrypto;
@@ -306,4 +306,81 @@ test("ZIP 恢复按哈希补原文件：旧标题不重复加歌；同名不同�
     assert.equal(bridge.state.playlist[0].title, "已手动更名");
     assert.equal(bridge.state.playlist.filter((t) => t.hash === ha).length, 1);
   } finally { cleanup(bridge); }
+});
+
+test("多 GM 设备是独立缓存：本机待同步并不等于音频源文件永久丢失", () => {
+  const hash = "5".repeat(64);
+  assert.deepEqual(describeLocalAudio(hash, { localMissing: [hash] }),
+    { status: "pending", label: "本机待同步" });
+  assert.deepEqual(describeLocalAudio(hash, { localMissing: [hash], fetching: [hash] }),
+    { status: "fetching", label: "正在同步" });
+  assert.deepEqual(describeLocalAudio(hash, { localMissing: [hash], unavailable: [hash] }),
+    { status: "offline", label: "等待音源设备上线" });
+  assert.deepEqual(describeLocalAudio(hash, { localMissing: [hash],
+    corrupt: [{ hash, reason: "hash-mismatch" }] }),
+    { status: "corrupt", label: "本机缓存校验异常" });
+  assert.equal(describeLocalAudio(hash, { localMissing: [] }), null);
+});
+
+test("同账号另一台设备上线后，已判暂无来源的本机自动重新请求文件", async () => {
+  const hash = "6".repeat(64);
+  const sent = [];
+  const events = [];
+  const relay = new RelayClient("multi-gm-test", "b".repeat(32), () => {}, () => {},
+    (event) => events.push(event));
+  relay.ws = { readyState: FakeWebSocket.OPEN,
+    send: (data) => sent.push(JSON.parse(data)), close: () => {} };
+  try {
+    await relay.updateTracks([{ id: "song", title: "另一台 GM 有原件", hash, size: 100 }]);
+    assert.equal(sent.filter((m) => m.t === "need" && m.hash === hash).length, 1);
+    relay.onControl(JSON.stringify({ t: "unavailable", hash }));
+    assert.ok(relay.unavailable.has(hash));
+    relay.onControl(JSON.stringify({ t: "available", hashes: [hash] }));
+    assert.ok(!relay.unavailable.has(hash));
+    assert.equal(sent.filter((m) => m.t === "need" && m.hash === hash).length, 2,
+      "存有音频的电脑/其他 GM 上线公告后，手机应自动重新取文件");
+    assert.ok(events.some((e) => e.type === "source-found" && e.hash === hash));
+  } finally { relay.close(); }
+});
+
+test("GM 拖动歌单后跨端元数据顺序更新，但不改变现有播放时钟", async () => {
+  let state = createState("7".repeat(32));
+  for (let n = 0; n < 3; n++) {
+    state = addTrack(state, { title: "歌曲" + n,
+      hash: String(n + 1).repeat(64), size: 100 + n, duration: 25 });
+  }
+  state = applyCommand(state, { type: "select", trackId: state.playlist[1].id });
+  const playback = structuredClone(state.playback);
+  const firstId = state.playlist[0].id;
+  const { bridge } = makeBridge(state);
+  try {
+    await bridge.start();
+    const result = await bridge.apiPost("/api/rooms/test/command",
+      { type: "playlist", op: "move", from: 0, to: 2 });
+    assert.deepEqual(result.state.playlist.map((t) => t.title),
+      ["歌曲1", "歌曲2", "歌曲0"]);
+    assert.deepEqual(result.state.playback, playback);
+    assert.equal(result.state.playlist[2].id, firstId);
+    const noOp = await bridge.apiPost("/api/rooms/test/command",
+      { type: "playlist", op: "move", from: 1, to: 1 });
+    assert.equal(noOp.state.rev, result.state.rev, "未改变顺序不应产生新修订");
+  } finally { cleanup(bridge); }
+});
+
+test("建分类和移动歌曲到分类只修改元数据，播放进度不被重置", async () => {
+  let state=createState("d".repeat(32));
+  state=addTrack(state,{title:"持续播放的曲目",hash:"8".repeat(64),size:100,duration:30});
+  state=applyCommand(state,{type:"select",trackId:state.playlist[0].id});
+  const playback=structuredClone(state.playback);
+  const {bridge}=makeBridge(state);
+  try {
+    await bridge.start();
+    await bridge.apiPost("/api/rooms/test/command",
+      {type:"folder",op:"create",name:"新的分类"});
+    assert.deepEqual(bridge.state.playback,playback);
+    await bridge.apiPost("/api/rooms/test/command",
+      {type:"track.folder",trackId:state.playlist[0].id,folder:"新的分类"});
+    assert.deepEqual(bridge.state.playback,playback);
+    assert.equal(bridge.state.playlist[0].folder,"新的分类");
+  } finally {cleanup(bridge);}
 });

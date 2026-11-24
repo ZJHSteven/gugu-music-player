@@ -260,6 +260,7 @@ export class RelayClient {
         this.unavailable.has(hash) || this.requested.size >= MAX_SIMULTANEOUS_DOWNLOADS) return;
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     this.requested.add(hash);
+    this.onAvailability({ type: "requesting", hash });
     this.metrics.requested++;
     this.note("request", { hash: hash.slice(0, 10) });
     // 协商仅影响本次文件发送，旧版 GM 看不懂此字段仍沿用原发送流程。

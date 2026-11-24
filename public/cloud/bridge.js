@@ -57,7 +57,7 @@ export class CloudBridge {
     this.fileListeners = new Set();
     this.healthListeners = new Set();
     this.audioHealth = {
-      checking: false, localMissing: [], corrupt: [], unavailable: [],
+      checking: false, localMissing: [], corrupt: [], fetching: [], unavailable: [],
       remoteMissing: [], metadataError: "", transferError: "",
     };
     this.lastMissingBroadcast = new Map();
@@ -244,7 +244,9 @@ export class CloudBridge {
   }
 
   updateHealth(patch) {
-    this.audioHealth = { ...this.audioHealth, ...patch };
+    const next = { ...this.audioHealth, ...patch };
+    if (JSON.stringify(next) === JSON.stringify(this.audioHealth)) return;
+    this.audioHealth = next;
     for (const listener of this.healthListeners) {
       try { listener({ ...this.audioHealth }); } catch (error) { console.warn(error); }
     }
@@ -264,7 +266,17 @@ export class CloudBridge {
     }
     const hash = event.hash;
     if (!this.state?.playlist.some((t) => t.hash === hash)) return;
+    if (event.type === "requesting") {
+      this.updateHealth({
+        fetching: [...new Set([...this.audioHealth.fetching, hash])],
+        unavailable: this.audioHealth.unavailable.filter((x) => x !== hash),
+      });
+      return;
+    }
     if (event.type === "unavailable" || event.type === "transfer-error") {
+      this.updateHealth({
+        fetching: this.audioHealth.fetching.filter((x) => x !== hash),
+      });
       this.updateHealth({ unavailable: [...new Set([...this.audioHealth.unavailable, hash])] });
       if (event.type === "transfer-error") {
         this.updateHealth({ transferError: "音频多次传输失败，已提醒房主检查原文件或网络连接" });
@@ -281,6 +293,9 @@ export class CloudBridge {
       const remaining = this.audioHealth.unavailable.filter((x) => x !== hash);
       const change = { unavailable: remaining,
         remoteMissing: this.audioHealth.remoteMissing.filter((x) => x !== hash) };
+      if (event.type === "available") {
+        change.fetching = this.audioHealth.fetching.filter((x) => x !== hash);
+      }
       if (event.type === "available") {
         change.localMissing = this.audioHealth.localMissing.filter((x) => x !== hash);
         change.corrupt = this.audioHealth.corrupt.filter((x) => x.hash !== hash);
@@ -316,6 +331,7 @@ export class CloudBridge {
     this.updateHealth({
       metadataError: "", checking: true,
       localMissing: this.audioHealth.localMissing.filter((hash) => validHashes.has(hash)),
+      fetching: this.audioHealth.fetching.filter((hash) => validHashes.has(hash)),
       unavailable: this.audioHealth.unavailable.filter((hash) => validHashes.has(hash)),
       remoteMissing: this.audioHealth.remoteMissing.filter((hash) => validHashes.has(hash)),
     });
@@ -523,7 +539,9 @@ export class CloudBridge {
     if (/\/release$/.test(path)) return {};
     if (/\/command$/.test(path)) return this.change(
       (s, now) => applyCommand(s, body, now),
-      { metadataOnly: body?.type === "track.update" }
+      { metadataOnly: body?.type === "track.update" ||
+        (body?.type === "playlist" && body?.op === "move") ||
+        body?.type === "folder" || body?.type === "track.folder" }
     );
     if (/\/tracks\/bilibili$/.test(path)) {
       throw new Error("云版暂未支持原版需要 Node 抓取的 B 站歌曲；请先上传本地音频文件");

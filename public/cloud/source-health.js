@@ -24,6 +24,27 @@ export function validatePlaylist(state) {
   return true;
 }
 
+/**
+ * 每个浏览器独立保存原文件。手机本地没有缓存并不代表歌曲损坏，
+ * 同账号电脑 GM 也只是另一个可向 DO 提供文件的在线来源。
+ */
+export function describeLocalAudio(hash, health = {}) {
+  if (!hash) return null;
+  if ((health.corrupt || []).some((entry) => entry.hash === hash)) {
+    return { status: "corrupt", label: "本机缓存校验异常" };
+  }
+  if ((health.fetching || []).includes(hash)) {
+    return { status: "fetching", label: "正在同步" };
+  }
+  if ((health.unavailable || []).includes(hash)) {
+    return { status: "offline", label: "等待音源设备上线" };
+  }
+  if ((health.localMissing || []).includes(hash)) {
+    return { status: "pending", label: "本机待同步" };
+  }
+  return null;
+}
+
 export async function verifyCachedAudio(track, read, hashFile) {
   try {
     const blob = await read(track.hash);
