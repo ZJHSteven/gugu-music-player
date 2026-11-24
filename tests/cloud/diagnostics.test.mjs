@@ -95,3 +95,22 @@ test("匿名诊断暴露房间容量、命名空间与最小指针可写性，�
   assert.ok(!reportText.includes(rawRoom));
   assert.ok(!reportText.includes("NEVER-SHOW-THIS-SECRET"));
 });
+
+test("移动端滚动诊断仅公开 iframe/滚动数字与弹窗调整状态", () => {
+  const text = makeDiagnosticReport({
+    mobileLayout: { screenHeight: 852, innerHeight: 640,
+      visualViewportHeight: 640, appHeight: 640,
+      mainClientHeight: 585, mainScrollHeight: 814, mainScrollTop: 229,
+      scrollRange: 229, requestedPopoverHeight: 494,
+      popoverHeightAdjusted: true,
+      roomId: "PRIVATE-ROOM-SHOULD-NOT-APPEAR" },
+  });
+  const report = JSON.parse(text.slice(text.indexOf("{")));
+  assert.deepEqual(report.mobileLayout, {
+    screenHeight: 852, innerHeight: 640, visualViewportHeight: 640,
+    appHeight: 640, mainClientHeight: 585, mainScrollHeight: 814,
+    mainScrollTop: 229, scrollRange: 229,
+    requestedPopoverHeight: 494, popoverHeightAdjusted: true,
+  });
+  assert.ok(!text.includes("PRIVATE-ROOM-SHOULD-NOT-APPEAR"));
+});

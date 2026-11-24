@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>咕咕点歌台</title>
-    <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./style.css?v=3.3.9" />
   </head>
   <body>
     <div class="app">
@@ -12,6 +12,8 @@
         <div class="mark"><img src="./icon.png" alt="" /></div>
         <div class="name">咕咕点歌台</div>
         <div class="right">
+          <button type="button" class="mobile-scroll-jump" data-act="mobile-scroll"
+            aria-label="向下滚动播放器" title="向下翻页（无法用手滑动时使用）">↓</button>
           <!-- iPhone矮窗口里不用先滚到底部才能找到诊断。 -->
           <button type="button" class="diag-jump" data-act="diag-jump"
             aria-label="打开设置与诊断" title="设置与诊断">设置</button>
@@ -37,6 +39,6 @@
 
     <!-- 也可以用 ?api=https://your-server 临时覆盖 -->
     <script src="./config.js"></script>
-    <script type="module" src="./app.js"></script>
+    <script type="module" src="./app.js?v=3.3.9"></script>
   </body>
 </html>

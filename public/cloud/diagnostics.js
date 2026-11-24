@@ -239,6 +239,19 @@ export function makeDiagnosticReport(source) {
       elapsedMs: finite(p.connectionProbe.elapsedMs),
     } : null,
     relayAtCloudflare: serverStatus(p.server),
+    // 匿名尺寸数据仅用于定位 iOS Owlbear 宿主裁剪/滚动问题。
+    mobileLayout: p.mobileLayout ? {
+      screenHeight: finite(p.mobileLayout.screenHeight),
+      innerHeight: finite(p.mobileLayout.innerHeight),
+      visualViewportHeight: finite(p.mobileLayout.visualViewportHeight),
+      appHeight: finite(p.mobileLayout.appHeight),
+      mainClientHeight: finite(p.mobileLayout.mainClientHeight),
+      mainScrollHeight: finite(p.mobileLayout.mainScrollHeight),
+      mainScrollTop: finite(p.mobileLayout.mainScrollTop),
+      scrollRange: finite(p.mobileLayout.scrollRange),
+      requestedPopoverHeight: finite(p.mobileLayout.requestedPopoverHeight),
+      popoverHeightAdjusted: p.mobileLayout.popoverHeightAdjusted === true,
+    } : null,
     diagnosticsError: p.diagnosticsError ? "DO 状态读取失败或超时" : null,
   };
   return "咕咕点歌台 · 匿名播放诊断\n" +

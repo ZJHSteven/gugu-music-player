@@ -1,3 +1,12 @@
+## 2026-11-24：v3.3.9 iPhone 真机仍然不能滚动的补救
+
+- [x] 复核用户反馈：v3.3.8 仅取消内部 320px 限高，未处理 Owlbear 外层裁剪 iframe（Manifest 640px 但实际只显示约 470px）的情况。当前专用 iPad 调试设备离线，无法直接读真实 iPhone WebKit。
+- [x] 利用 Owlbear 官方 `OBR.action.getHeight/setHeight`，在窄屏 iPhone 上请求更符合可见区域的弹窗高度；页面仍使用 fixed iframe 容器防止 WebKit 意外撑高。
+- [x] 内部内容滚动区增加裁切安全余量，顶部新增「↓/↑」翻页后备按钮；为 Safari 原生触摸滚动失效时添加手动手势兜底，不截获按钮、链接、音量滑块、进度条。
+- [x] HTML 入口 CSS/JS 链接加入 v3.3.9 查询版本，避免手机继续使用旧布局资产；匿名诊断加入屏幕/iframe/滚动范围等数值。
+- [x] 真实 Chrome 触屏 iframe 裁切仿真：470px 宿主裁掉 640px iframe 下部时，旧 26px 底边距最多滚 35px、底部不可见；新逻辑手势滚 140px，顶部按钮滚到 229px 后底部控件进入可见区。
+- [ ] 运行云版/Node 回归与生产预检；成功后发布并线上验证，推送 GitHub PR。
+
 ## 2026-11-24：v3.3.8 手机端 Owlbear 浮窗只显示半屏
 
 - [x] 根据用户 iPhone Safari Owlbear 截图定位：旧 `public/style.css` 窄屏触屏规则将 `.app` 最高限制为 320px，黄色启用音频按钮下半截及余下区域被 `overflow:hidden` 裁掉。

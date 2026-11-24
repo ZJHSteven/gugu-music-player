@@ -1,3 +1,10 @@
+## 2026-11-24 · v3.3.9 iPhone 滚动修复第二轮（发布验证中）
+
+- 用户明确反馈 v3.3.8 真机 Safari 中仍不能滚动。重新分析：仅让 `.app` 填满 iframe 并不足够，宿主可能把 Manifest 640px 的 iframe 裁成可见约470px，而内部 .main 仍按640px计算是否溢出。
+- 采用三重独立修复：通过官方 Owlbear `action.setHeight` 将窄屏 iPhone 弹窗请求高度降低至设备屏幕的约58%（上限500px）；WebKit 兼容的 fixed .app + .main 滚动安全余量；顶部新增 ↓/↑ 翻页按钮可直接推动 scrollTop。iOS 手指上滑原生未生效时使用非侵入式 touchmove 回退，跳过所有表单和播放器拖动控制。
+- 测试：Chrome 触屏390px宽，真实640px iframe被470px宿主裁切：旧版本 `.main` scrollRange仅35px，底部控件最大滚动后仍超出裁剪；新版本可通过手势移动140px、点击箭头移动229px，目标控件完整出现。静态资源使用 v3.3.9 查询参数避免旧Safari缓存；匿名诊断新增 iframe/滚动数值供真机后续验证。
+- iOSLab状态确认专用测试iPad离线，且明确拒绝回退到未授权iPhone；本轮尚无法声称真实iPhone WebKit端到端通过。
+
 ## 2026-11-24 · v3.3.8 修复 Owlbear iPhone 浮窗半屏空白（正式上线）
 
 - 用户截图中 PLAYER/DM 面板顶部「正在播放」卡片正常，但黄色「开启并同步房间声音」按钮在中途被截断，下方整个 Owlbear iframe 是空白背景。

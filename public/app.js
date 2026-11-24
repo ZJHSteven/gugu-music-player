@@ -6,6 +6,7 @@ import { makeDiagnosticReport } from "./cloud/diagnostics.js";
 import { anonymousRoomCode } from "./cloud/metadata-inspection.js";
 import { shouldRetryOwlbear, resetOwlbearRetries } from "./obr-identity.js";
 import { IosSyncAudio } from "./cloud/ios-sync-audio.js";
+import { fitMobilePopover, jumpScroll, installIosTouchScroll } from "./cloud/mobile-popover.js";
 
 window.__appBuild = "build-folders-1";
 
@@ -69,6 +70,7 @@ const S = {
   diagnosticsReport: "",
   diagnosticsSummary: "",
   revealDiagnostics: false, // 只在用户主动展开时滚动；状态消息不抢手指位置
+  mobilePopover: null,
 };
 
 let bus = null;
@@ -80,6 +82,9 @@ let queued = false;
 // 其他平台继续使用已验收的后台 Engine，避免扩大修复影响面。
 const iosAudio = /iPhone|iPad|iPod/i.test(navigator.userAgent);
 document.documentElement.classList.toggle("cloud-mode", Boolean(window.BARD_CLOUD));
+if (matchMedia("(pointer:coarse) and (max-width:560px)").matches) {
+  installIosTouchScroll(document.getElementById("view"), navigator.userAgent);
+}
 let iosFollower = null;
 let iosFollowerStatus = null;
 
@@ -286,6 +291,20 @@ async function generateDiagnostics() {
       connectionProbe,
       server,
       diagnosticsError,
+      mobileLayout: {
+        screenHeight: screen.height,
+        innerHeight: innerHeight,
+        visualViewportHeight: window.visualViewport?.height ?? null,
+        appHeight: document.querySelector(".app")?.getBoundingClientRect().height ?? null,
+        mainClientHeight: document.getElementById("view")?.clientHeight ?? null,
+        mainScrollHeight: document.getElementById("view")?.scrollHeight ?? null,
+        mainScrollTop: document.getElementById("view")?.scrollTop ?? null,
+        scrollRange: Math.max(0,
+          (document.getElementById("view")?.scrollHeight ?? 0) -
+          (document.getElementById("view")?.clientHeight ?? 0)),
+        requestedPopoverHeight: S.mobilePopover?.target ?? null,
+        popoverHeightAdjusted: S.mobilePopover?.changed === true,
+      },
     });
   } catch {
     S.diagnosticsSummary = "诊断收集遇到异常，可以重新生成或刷新页面再试。";
@@ -1035,6 +1054,18 @@ document.addEventListener("click", (ev) => {
   const id = el.dataset.id;
 
   if (act === "tab") S.tab = el.dataset.tab;
+  else if (act === "mobile-scroll") {
+    const result = jumpScroll(document.getElementById("view"));
+    const button = document.querySelector(".mobile-scroll-jump");
+    if (button) {
+      button.textContent = result.atBottom ? "↑" : "↓";
+      button.setAttribute("aria-label", result.atBottom ? "返回播放器顶部" : "向下滚动播放器");
+    }
+    if (!result.changed && result.max <= 1) {
+      toast("页面没有可滚动内容；请检查 Owlbear 是否已加载新版手机布局", "warn", 5500);
+    }
+    return;
+  }
   else if (act === "diag-jump") {
     if (S.role === "GM") S.tab = "settings";
     else S.playerSettingsOpen = true;
@@ -1364,6 +1395,16 @@ async function boot() {
   resetOwlbearRetries(sessionStorage);
   S.role = role;
   S.roomId = roomId;
+  if (window.BARD_CLOUD) {
+    // iPhone 的宿主浮窗可能实际只展示 640px iframe 的上半截。
+    // 通过 Owlbear 官方 Action API 主动缩小父弹窗；不阻塞房间连接。
+    fitMobilePopover(OBR, {
+      userAgent: navigator.userAgent,
+      coarse: matchMedia("(pointer:coarse)").matches,
+      width: innerWidth,
+      screenHeight: screen.availHeight || screen.height,
+    }).then((result) => { S.mobilePopover = result; }).catch(console.warn);
+  }
   initIosFollower();
   if (window.BARD_CLOUD && roomId) {
     const cloud = await initCloudBridge(OBR, role, roomId);
